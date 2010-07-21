@@ -29,6 +29,39 @@ static int metadatafs_readlink(const char *path, char *buf, size_t size)
 static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		off_t offset, struct fuse_file_info *fi)
 {
+	DIR *dp;
+	struct dirent *de;
+	char realpath[PATH_MAX];
+
+	strncpy(realpath, basepath, sizeof(realpath));
+	strncat(realpath, path, sizeof(realpath) - strlen(realpath));
+
+	printf("realpath = %s\n", realpath);
+	dp = opendir(realpath);
+	if (!dp) return -errno;
+
+	while ((de = readdir(dp)) != NULL)
+	{
+		struct stat st;
+		static int count = 0;
+		/* TODO also check subdirs */
+		char *file;
+
+		if (count == 5) break;
+
+		strncpy(realpath, de->d_name, sizeof(realpath));
+		file = realpath - strlen(realpath) - 1;
+		while (file > realpath && *file != '.') file--;
+
+		if (!strcmp(file, ".mp3"))
+		{
+			count++;
+			memset(&st, 0, sizeof(st));
+			if (filler(buf, realpath, &st, 0))
+				break;
+		}
+	}
+	closedir(dp);
 	return 0;
 }
 
@@ -65,7 +98,6 @@ static int metadatafs_statfs(const char *path, struct statvfs *stbuf)
 
 static int metadatafs_release(const char *path, struct fuse_file_info *fi)
 {
-    
 	return 0;
 }
 
@@ -73,6 +105,10 @@ static void * metadatafs_init(struct fuse_conn_info *conn)
 {
 	conn->async_read = 0;
 
+	/* we should generate the database here
+	 * in case it already exists, just
+	 * compare mtimes of files
+	 */
 	return NULL;
 }
 
