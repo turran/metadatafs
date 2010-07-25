@@ -90,7 +90,7 @@ static char * _tag_get_text(struct id3_tag *tag, const char *name)
 	union id3_field *field;
 	enum id3_field_textencoding enc;
 	char *title = NULL;
-	
+
 	frame = id3_tag_findframe(tag, name, 0);
 	if (!frame) goto end;
 
@@ -192,7 +192,6 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 	/* append default directories */
 	while (f)
 	{
-		
 		if (f & 0x1)
 		{
 			if (filler(buf, _fields[i], NULL, 0))
@@ -205,6 +204,7 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 	/* add simple '.' and '..' files */
 	filler(buf, ".", NULL, 0);
 	filler(buf, "..", NULL, 0);
+	/* given the path, select the needed artist/album/whatever */
 
 	return 0;
 }
@@ -266,6 +266,79 @@ static int metadatafs_release(const char *path, struct fuse_file_info *fi)
 {
 	return 0;
 }
+static void db_cleanup(void)
+{
+	sqlite3_close(db);
+}
+
+static void db_insert_artist(const char *artist)
+{
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+
+	printf("inserting artist %s\n", artist);
+
+}
+
+static void db_insert_album(const char *album)
+{
+	printf("inserting album %s\n", album);
+}
+
+static void db_insert_track(const char *track, const char *file, time_t mtime)
+{
+	/* check if the file exists,, if so check the mtime and compare */
+	printf("file found %s %s %ld\n", track, file, mtime);
+}
+
+static int db_setup(void)
+{
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+	/* we should generate the database here
+	 * in case it already exists, just
+	 * compare mtimes of files
+	 */
+	if (sqlite3_open("/tmp/metatagfs.db", &db) != SQLITE_OK)
+	{
+		printf("could not open the db\n");
+		return 0;
+	}
+
+	error = sqlite3_prepare(db, "CREATE TABLE IF NOT EXISTS artist (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);",
+			-1, &stmt, &tail);
+	if (error != SQLITE_OK)
+	{
+		printf("error artist\n");
+		return 0;
+	}
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+
+	error = sqlite3_prepare(db, "CREATE TABLE IF NOT EXISTS album (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);",
+			-1, &stmt, &tail);
+	if (error != SQLITE_OK)
+	{
+		printf("error album\n");
+		return 0;
+	}
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+
+	error = sqlite3_prepare(db, "CREATE TABLE IF NOT EXISTS track (id INTEGER PRIMARY KEY AUTOINCREMENT, file TEXT, mtime INTEGER);",
+			-1, &stmt, &tail);
+	if (error != SQLITE_OK)
+	{
+		printf("error track\n");
+		return 0;
+	}
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+
+	return 1;
+}
 
 static void * metadatafs_init(struct fuse_conn_info *conn)
 {
@@ -281,15 +354,7 @@ static void * metadatafs_init(struct fuse_conn_info *conn)
 	dp = opendir(basepath);
 	if (!dp) return NULL;
 
-	/* we should generate the database here
-	 * in case it already exists, just
-	 * compare mtimes of files
-	 */
-	if (sqlite3_open("/tmp/metatagfs.db", &db) != SQLITE_OK)
-	{
-		printf("could not open the db\n");
-		return NULL;
-	}
+	if (!db_setup()) return NULL;
 
 	while ((de = readdir(dp)) != NULL)
 	{
@@ -303,6 +368,9 @@ static void * metadatafs_init(struct fuse_conn_info *conn)
 			struct id3_file *file;
 			struct id3_tag *tag;
 			struct stat st;
+			char *artist;
+			char *album;
+			char *title;
 
 			strncpy(realfile, basepath, PATH_MAX);
 			strncat(realfile, de->d_name, PATH_MAX - strlen(de->d_name));
@@ -310,15 +378,15 @@ static void * metadatafs_init(struct fuse_conn_info *conn)
 			stat(realfile, &st);
 			file = id3_file_open(realfile, ID3_FILE_MODE_READONLY);
 			tag = id3_file_tag(file);
-			/* TODO mem leak :) */
-			printf("file found %s [%s - %s]\n", realfile, _tag_get_artist(tag), _tag_get_title(tag));
+			artist = _tag_get_artist(tag);
+			db_insert_artist(artist);
+			free(artist);
+			title = _tag_get_title(tag);
+			db_insert_track(title, realfile, st.st_mtime);
+			free(title);
 			id3_file_close(file);
 		}
 	}
-	/* CREATE TABLE IF NOT EXISTS artist */
-	/* CREATE TABLE IF NOT EXISTS title */
-	/* CREATE TABLE IF NOT EXISTS album */
-	/* CREATE TABLE IF NOT EXISTS track (file type! CONSTRAINT PRIMARY KEY, mtime type!) */
 	closedir(dp);
 
 	return NULL;
@@ -326,7 +394,7 @@ static void * metadatafs_init(struct fuse_conn_info *conn)
 
 static void metadatafs_destroy(void *data)
 {
-	sqlite3_close(db);
+	db_cleanup();
 }
 
 static struct fuse_operations metadatafs_ops = {
@@ -356,7 +424,7 @@ int main(int argc, char **argv)
 	args.argv = argv + 1;
 	args.allocated = 0;
 
-	//fuse_opt_match(args, 
+	//fuse_opt_match(args,
 	fuse_main(argc - 1, argv + 1, &metadatafs_ops, NULL);
 
 	free(basepath);
