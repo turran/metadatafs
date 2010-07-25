@@ -33,6 +33,7 @@ AC_C_BIGENDIAN
 # Checks for packages which use pkg-config.
 PKG_CHECK_MODULES([fuse], [fuse >= 2.6.0])
 PKG_CHECK_MODULES([id3tag], [id3tag])
+PKG_CHECK_MODULES([sqlite3], [sqlite3])
 
 AC_OUTPUT([
 Makefile
