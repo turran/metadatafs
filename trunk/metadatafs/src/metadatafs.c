@@ -31,6 +31,16 @@ const char *_fields[] = {
 
 const char *unknown = "Unknown";
 
+#if 0
+typedef enum metadatafs_fields
+{
+	FIELD_ARTIST,
+	FIELD_TITLE,
+	FIELD_ALBUM,
+	FIELD_GENRE,
+} metadatafs_fields;
+#endif
+
 typedef enum metadatafs_fields
 {
 	METADATAFS_ARTIST = (1 << 0),
@@ -45,6 +55,7 @@ typedef struct _metadatafs_query
 {
 	char entries[METADATAFS_FIELDS][PATH_MAX];
 	metadatafs_fields fields;
+	metadatafs_fields last_field;
 } metadatafs_query;
 
 static char * _path_last_char(char *path, char token)
@@ -57,14 +68,14 @@ static char * _path_last_char(char *path, char token)
 	return tmp + 1;
 }
 
-static void _path_to_query(char *path, metadatafs_query *q)
+static int _path_to_query(char *path, metadatafs_query *q)
 {
 	char *token;
 
 	memset(q, 0, sizeof(metadatafs_query));
 	token = strtok(path, "/");
         if (!token)
-		return;
+		return 0;
 	do
 	{
 		int i;
@@ -73,15 +84,21 @@ static void _path_to_query(char *path, metadatafs_query *q)
 		{
 			if (!strncmp(token, _fields[i], strlen(_fields[i])))
 			{
-				/* get next token for */
-				token = strtok(NULL, "/");
-				if (!token) return;
-
+				/* mark the last field */
 				q->fields |= (1 << i);
+				/* get next token for the value */
+				token = strtok(NULL, "/");
+				if (!token)
+				{
+					q->last_field = (1 << i);
+					break;
+				}
 				strncpy(q->entries[i], token, PATH_MAX);
 			}
 		}
 	} while (token = strtok(NULL, "/"));
+
+	return 1;
 }
 
 static char * _tag_get_text(struct id3_tag *tag, const char *name)
@@ -139,37 +156,43 @@ end:
 
 }
 
+static char * _query_to_string(metadatafs_query *q)
+{
+	char str[4096];
+
+	str[0] = '\0';
+	if (q->last_field & METADATAFS_ARTIST)
+	{
+		strcpy(str, "SELECT DISTINCT artist.name FROM artist");
+	}
+	else if (q->last_field & METADATAFS_ALBUM)
+	{
+		strcpy(str, "SELECT DISTINCT album.name FROM album");
+		if (q->fields & METADATAFS_ARTIST)
+		{
+			sprintf(str, "%s JOIN artist WHERE album.artist = artist.id and artist.name = '%s';", str, q->entries[0]);
+		}
+	}
+	else if (q->last_field & METADATAFS_TITLE)
+	{
+	}
+
+	return strdup(str);
+}
+
 static inline char * _tag_get_title(struct id3_tag *tag)
 {
 	return _tag_get_text(tag, ID3_FRAME_TITLE);
 }
 
+static inline char * _tag_get_album(struct id3_tag *tag)
+{
+	return _tag_get_text(tag, ID3_FRAME_ALBUM);
+}
+
 static inline char * _tag_get_artist(struct id3_tag *tag)
 {
 	return _tag_get_text(tag, ID3_FRAME_ARTIST);
-}
-
-/* given a path like /artist/foo/album/bar mark artist and album fields */
-static void _path_mark_fields(char *path, metadatafs_fields *f)
-{
-	char *token;
-
-	*f = 0;
-	token = strtok(path, "/");
-        if (!token)
-		return;
-	do
-	{
-		int i;
-
-		for (i = 0; i < METADATAFS_FIELDS; i++)
-		{
-			if (!strncmp(token, _fields[i], strlen(_fields[i])))
-			{
-				*f |= (1 << i);
-			}
-		}
-	} while (token = strtok(NULL, "/"));
 }
 
 static int metadatafs_readlink(const char *path, char *buf, size_t size)
@@ -180,32 +203,107 @@ static int metadatafs_readlink(const char *path, char *buf, size_t size)
 static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		off_t offset, struct fuse_file_info *fi)
 {
-	metadatafs_fields f;
+	metadatafs_query q;
 	char *tmp;
-	int i = 0;
 
 	tmp = strdup(path);
-	_path_mark_fields(tmp, &f);
+	_path_to_query(tmp, &q);
 	free(tmp);
-	/* invert the flags found on the path */
-	f = ~f & ((1 << METADATAFS_FIELDS) - 1);
-	/* append default directories */
-	while (f)
+	/* the last directory on the path is not a metadata field */
+	printf("readdir %s %d\n", path, q.last_field);
+	if (!q.last_field)
 	{
-		if (f & 0x1)
+		int i = 0;
+		metadatafs_fields f;
+
+		/* invert the flags found on the path */
+		f = ~q.fields & ((1 << METADATAFS_FIELDS) - 1);
+		/* append default directories */
+		while (f)
 		{
-			if (filler(buf, _fields[i], NULL, 0))
+			if (f & 0x1)
+			{
+				if (filler(buf, _fields[i], NULL, 0))
+					break;
+			}
+			f >>= 1;
+			i++;
+		}
+	}
+	/* given the path, select the needed artist/album/whatever */
+	else
+	{
+		sqlite3_stmt *stmt;
+		const char *tail;
+		int error;
+		char *query;
+
+	
+		query = _query_to_string(&q);	
+		error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+		if (error != SQLITE_OK)
+		{
+			printf("error querying\n");
+		}
+		while (sqlite3_step(stmt) == SQLITE_ROW)
+		{
+			const unsigned char *name;
+
+			name = sqlite3_column_text(stmt, 0);
+			if (filler(buf, name, NULL, 0))
 				break;
 		}
-		f >>= 1;
-		i++;
-	}
+		sqlite3_finalize(stmt);
+		free(query);
+#if 0
+		if (q.last_field & METADATAFS_ARTIST)
+		{
+			error = sqlite3_prepare(db, "SELECT * FROM artist", -1, &stmt, &tail);
+			if (error != SQLITE_OK)
+			{
+				printf("error querying\n");
+			}
+			while (sqlite3_step(stmt) == SQLITE_ROW)
+			{
+				const unsigned char *name;
 
+				name = sqlite3_column_text(stmt, 1);
+				if (filler(buf, name, NULL, 0))
+					break;
+			}
+			sqlite3_finalize(stmt);
+		}
+		else if (q.last_field & METADATAFS_ALBUM)
+		{
+			error = sqlite3_prepare(db, "SELECT DISTINCT * FROM album", -1, &stmt, &tail);
+			if (error != SQLITE_OK)
+			{
+				printf("error querying\n");
+			}
+			while (sqlite3_step(stmt) == SQLITE_ROW)
+			{
+				const unsigned char *name;
+
+				name = sqlite3_column_text(stmt, 1);
+				if (filler(buf, name, NULL, 0))
+					break;
+			}
+			sqlite3_finalize(stmt);
+		}
+		else if (q.last_field & METADATAFS_TITLE)
+		{
+
+		}
+		else
+		{
+
+		}
+#endif
+	}
 	/* add simple '.' and '..' files */
 	filler(buf, ".", NULL, 0);
 	filler(buf, "..", NULL, 0);
-	/* given the path, select the needed artist/album/whatever */
-
+	
 	return 0;
 }
 
@@ -239,7 +337,17 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 		/* regular file or entry on the db */
 		if (!is_field)
 		{
+			if (!strncmp(file + strlen(file) - 3, "mp3", 3))
+			{
+				stbuf->st_mode = S_IFREG | 0644;
+				stbuf->st_nlink = 1;
 
+			}
+			else
+			{
+				stbuf->st_mode = S_IFDIR | 0755;
+				stbuf->st_nlink = 2;
+			}
 		}
 	}
 	/* check the last metadata directory */
@@ -271,22 +379,89 @@ static void db_cleanup(void)
 	sqlite3_close(db);
 }
 
-static void db_insert_artist(const char *artist)
+static int db_insert_artist(const char *artist)
 {
+	char query[PATH_MAX];
 	sqlite3_stmt *stmt;
 	const char *tail;
 	int error;
+	int id = -1;
 
-	printf("inserting artist %s\n", artist);
+	/* insert the new artist */
+	snprintf(query, PATH_MAX,
+			"INSERT OR IGNORE INTO artist (name) VALUES ('%s');",
+			artist);
+	error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+	if (error != SQLITE_OK)
+	{
+		printf("error artist %s\n", artist);
+	}
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	/* get the id */
+	snprintf(query, PATH_MAX,
+			"SELECT id FROM artist WHERE name = '%s';",
+			artist);
+	error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+	if (error != SQLITE_OK)
+	{
+		printf("error artist %s\n", artist);
+		return id;
+	}
+	if (sqlite3_step(stmt) != SQLITE_ROW)
+	{
+		printf("error querying artist\n");
+		return id;
+	}
+	id = sqlite3_column_int(stmt, 0);
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
 
+	return id;
 }
 
-static void db_insert_album(const char *album)
+static int db_insert_album(const char *album, int aid)
 {
-	printf("inserting album %s\n", album);
+	char query[PATH_MAX];
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+	int id = -1;
+
+	/* insert the new album */
+	snprintf(query, PATH_MAX,
+			"INSERT OR IGNORE INTO album (name, artist) VALUES ('%s',%d);",
+			album, aid);
+	error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+	if (error != SQLITE_OK)
+	{
+		printf("error album %s\n", album);
+	}
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	/* get the id */
+	snprintf(query, PATH_MAX,
+			"SELECT id FROM album WHERE name = '%s' AND artist = %d;",
+			album, aid);
+	error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+	if (error != SQLITE_OK)
+	{
+		printf("error album %s\n", album);
+		return id;
+	}
+	if (sqlite3_step(stmt) != SQLITE_ROW)
+	{
+		printf("error querying album\n");
+		return id;
+	}
+	id = sqlite3_column_int(stmt, 0);
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+
+	return id;
 }
 
-static void db_insert_track(const char *track, const char *file, time_t mtime)
+static void db_insert_track(const char *track, const char *file, time_t mtime, int album)
 {
 	/* check if the file exists,, if so check the mtime and compare */
 	printf("file found %s %s %ld\n", track, file, mtime);
@@ -301,13 +476,15 @@ static int db_setup(void)
 	 * in case it already exists, just
 	 * compare mtimes of files
 	 */
-	if (sqlite3_open("/tmp/metatagfs.db", &db) != SQLITE_OK)
+	if (sqlite3_open("/tmp/metadatafs.db", &db) != SQLITE_OK)
 	{
 		printf("could not open the db\n");
 		return 0;
 	}
 
-	error = sqlite3_prepare(db, "CREATE TABLE IF NOT EXISTS artist (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);",
+	error = sqlite3_prepare(db,
+			"CREATE TABLE IF NOT EXISTS "
+			"artist(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE);",
 			-1, &stmt, &tail);
 	if (error != SQLITE_OK)
 	{
@@ -317,7 +494,10 @@ static int db_setup(void)
 	sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 
-	error = sqlite3_prepare(db, "CREATE TABLE IF NOT EXISTS album (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT);",
+	error = sqlite3_prepare(db,
+			"CREATE TABLE IF NOT EXISTS "
+			"album(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, artist INTEGER, "
+			"FOREIGN KEY (artist) REFERENCES artist (id));",
 			-1, &stmt, &tail);
 	if (error != SQLITE_OK)
 	{
@@ -327,7 +507,10 @@ static int db_setup(void)
 	sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 
-	error = sqlite3_prepare(db, "CREATE TABLE IF NOT EXISTS track (id INTEGER PRIMARY KEY AUTOINCREMENT, file TEXT, mtime INTEGER);",
+	error = sqlite3_prepare(db,
+			"CREATE TABLE IF NOT EXISTS "
+			"track(id INTEGER PRIMARY KEY AUTOINCREMENT, file TEXT, mtime INTEGER, album INTEGER, "
+			"FOREIGN KEY (album) REFERENCES album (id));",
 			-1, &stmt, &tail);
 	if (error != SQLITE_OK)
 	{
@@ -340,54 +523,87 @@ static int db_setup(void)
 	return 1;
 }
 
-static void * metadatafs_init(struct fuse_conn_info *conn)
+static void _scan(const char *path)
 {
 	DIR *dp;
 	struct dirent *de;
 
-	/* setup the connection info */
-	conn->async_read = 0;
-
-	/* TODO read the database */
-	/* TODO update it */
-
-	dp = opendir(basepath);
-	if (!dp) return NULL;
-
-	if (!db_setup()) return NULL;
+	printf("scanning %s\n", path);
+	dp = opendir(path);
+	if (!dp) 
+	{
+		printf("cannot scan dir\n");
+		return;
+	}
 
 	while ((de = readdir(dp)) != NULL)
 	{
-		char *extension;
+		char realfile[PATH_MAX];
+		struct stat st;
 
-		/* TODO also check subdirs */
-		extension = _path_last_char(de->d_name, '.');
-		if (!strcmp(extension, "mp3"))
+		if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+			continue;
+
+		/* also check subdirs */
+		strncpy(realfile, path, PATH_MAX);
+		strncat(realfile, "/", PATH_MAX - strlen(de->d_name));
+		strncat(realfile, de->d_name, PATH_MAX - strlen(de->d_name));
+
+		if (stat(realfile, &st) < 0)
 		{
-			char realfile[PATH_MAX];
-			struct id3_file *file;
-			struct id3_tag *tag;
-			struct stat st;
-			char *artist;
-			char *album;
-			char *title;
+			printf("err on stat %d %s\n", errno, realfile);
+			continue;
+		}
 
-			strncpy(realfile, basepath, PATH_MAX);
-			strncat(realfile, de->d_name, PATH_MAX - strlen(de->d_name));
+		if (S_ISDIR(st.st_mode))
+		{
+			_scan(realfile);
+		}
+		else if (S_ISREG(st.st_mode))
+		{
+			char *extension;
 
-			stat(realfile, &st);
-			file = id3_file_open(realfile, ID3_FILE_MODE_READONLY);
-			tag = id3_file_tag(file);
-			artist = _tag_get_artist(tag);
-			db_insert_artist(artist);
-			free(artist);
-			title = _tag_get_title(tag);
-			db_insert_track(title, realfile, st.st_mtime);
-			free(title);
-			id3_file_close(file);
+			extension = _path_last_char(de->d_name, '.');
+			if (!strcmp(extension, "mp3"))
+			{
+				struct id3_file *file;
+				struct id3_tag *tag;
+				char *str;
+				int id;
+
+				file = id3_file_open(realfile, ID3_FILE_MODE_READONLY);
+				tag = id3_file_tag(file);
+
+				str = _tag_get_artist(tag);
+				id = db_insert_artist(str);
+				free(str);
+
+				str = _tag_get_album(tag);
+				id = db_insert_album(str, id);
+				free(str);
+
+				str = _tag_get_title(tag);
+				db_insert_track(str, realfile, id, st.st_mtime);
+				free(str);
+
+				id3_file_close(file);
+			}
 		}
 	}
 	closedir(dp);
+}
+
+
+static void * metadatafs_init(struct fuse_conn_info *conn)
+{
+
+	/* setup the connection info */
+	conn->async_read = 0;
+
+	/* read/create the database */
+	if (!db_setup()) return NULL;
+	/* update the database */
+	_scan(basepath);
 
 	return NULL;
 }
