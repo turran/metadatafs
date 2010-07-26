@@ -210,7 +210,7 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 	_path_to_query(tmp, &q);
 	free(tmp);
 	/* the last directory on the path is not a metadata field */
-	printf("readdir %s %d\n", path, q.last_field);
+	printf("readdir %s %d %d\n", path, q.last_field, q.fields);
 	if (!q.last_field)
 	{
 		int i = 0;
@@ -238,8 +238,7 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 		int error;
 		char *query;
 
-	
-		query = _query_to_string(&q);	
+		query = _query_to_string(&q);
 		error = sqlite3_prepare(db, query, -1, &stmt, &tail);
 		if (error != SQLITE_OK)
 		{
@@ -249,9 +248,13 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 		{
 			const unsigned char *name;
 
+			printf("name = %s\n", name);
 			name = sqlite3_column_text(stmt, 0);
 			if (filler(buf, name, NULL, 0))
+			{
+				printf("error\n");
 				break;
+			}
 		}
 		sqlite3_finalize(stmt);
 		free(query);
@@ -303,7 +306,7 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 	/* add simple '.' and '..' files */
 	filler(buf, ".", NULL, 0);
 	filler(buf, "..", NULL, 0);
-	
+
 	return 0;
 }
 
