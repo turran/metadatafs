@@ -74,6 +74,7 @@ typedef struct _metadatafs_query
 	char entries[METADATAFS_FIELDS][PATH_MAX];
 	metadatafs_fields fields;
 	metadatafs_fields last_field;
+	int files;
 } metadatafs_query;
 
 static int _name_is_empty(char *str)
@@ -110,6 +111,7 @@ static int _path_to_query(char *path, metadatafs_query *q)
 	{
 		int i;
 
+		/* TODO in case there's a Files set the files */
 		for (i = 0; i < METADATAFS_FIELDS; i++)
 		{
 			if (!strncmp(token, _fields[i], strlen(_fields[i])))
@@ -534,9 +536,58 @@ static int db_insert_title(const char *title, int album)
 
 }
 
+static int db_file_changed(const char *file, time_t mtime)
+{
+	char *str;
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+
+	str = sqlite3_mprintf("SELECT mtime FROM files WHERE file = '%q'", file);
+	/* check if the file exists if so check the mtime and compare */
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
+	if (error != SQLITE_OK)
+	{
+		printf("1 error file %s\n", file);
+		return 1;
+	}
+	if (sqlite3_step(stmt) != SQLITE_ROW)
+	{
+		return 1;
+	}
+	else
+	{
+		time_t dbtime;
+
+		dbtime = sqlite3_column_int(stmt, 0);
+		sqlite3_finalize(stmt);
+		if (dbtime < mtime)
+			return 1;
+		else
+			return 0;
+	}
+}
+
 static void db_insert_file(const char *file, time_t mtime, int title)
 {
-	/* check if the file exists,, if so check the mtime and compare */
+	char *str;
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+	int id = -1;
+
+	str = sqlite3_mprintf("INSERT OR IGNORE INTO files (file, mtime, title) VALUES ('%q',%d,%d);",
+			file, mtime, title);
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
+	if (error != SQLITE_OK)
+	{
+		printf("1 error file %s\n", file);
+		return;
+	}
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
 	printf("file found %s %ld %d\n", file, mtime, title);
 }
 
@@ -596,8 +647,8 @@ static int db_setup(void)
 	error = sqlite3_prepare(db,
 			"CREATE TABLE IF NOT EXISTS "
 			"files(id INTEGER PRIMARY KEY AUTOINCREMENT, file TEXT, dbfile TEXT, "
-			"mtime INTEGER, track INTEGER, "
-			"FOREIGN KEY (track) REFERENCES track (id));",
+			"mtime INTEGER, title INTEGER, "
+			"FOREIGN KEY (title) REFERENCES title (id));",
 			-1, &stmt, &tail);
 	if (error != SQLITE_OK)
 	{
@@ -659,6 +710,9 @@ static void _scan(const char *path)
 				int id;
 
 				printf("processing file %s\n", realfile);
+				if (!db_file_changed(realfile, st.st_mtime))
+					continue;
+
 				file = id3_file_open(realfile, ID3_FILE_MODE_READONLY);
 				tag = id3_file_tag(file);
 
@@ -666,27 +720,21 @@ static void _scan(const char *path)
 				str = _tag_get_artist(tag);
 				id = db_insert_artist(str);
 				free(str);
-				if (id < 0)
-				{
-					id3_file_close(file);
-					continue;
-				}
+				if (id < 0) goto end;
 				/* album */
 				str = _tag_get_album(tag);
 				id = db_insert_album(str, id);
 				free(str);
-				if (id < 0)
-				{
-					id3_file_close(file);
-					continue;
-				}
+				if (id < 0) goto end;
 				/* title */
 				str = _tag_get_title(tag);
 				id = db_insert_title(str, id);
 				free(str);
+				if (id < 0) goto end;
 
 				/* file */
-				db_insert_file(realfile, id, st.st_mtime);
+				db_insert_file(realfile, st.st_mtime, id);
+end:
 				id3_file_close(file);
 			}
 		}
