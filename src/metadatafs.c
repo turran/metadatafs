@@ -198,11 +198,7 @@ end:
 		return strdup(unknown);
 }
 
-static inline void _append_join(char *str)
-{
-
-}
-
+/* FIXME we should fix this function, horrible if's */
 static char * _query_to_string(metadatafs_query *q)
 {
 	char str[4096];
@@ -214,15 +210,15 @@ static char * _query_to_string(metadatafs_query *q)
 		sprintf(str, "SELECT DISTINCT %s.name FROM artist AS %s", _fields[FIELD_ARTIST], _fields[FIELD_ARTIST]);
 		if (q->fields & MASK_FILES)
 		{
-			sprintf(str, "%s JOIN album,title,files WHERE album.artist = artist.id AND title.album = album.id and and files.title = title.id", str, q->entries[FIELD_FILES]);
+			sprintf(str, "%s JOIN album,title,files WHERE album.artist = artist.id AND title.album = album.id and and files.title = title.id", str);
 		}
 		else if (q->fields & MASK_TITLE)
 		{
-			sprintf(str, "%s JOIN album,title WHERE album.artist = artist.id AND title.album = album.id", str, q->entries[FIELD_TITLE]);
+			sprintf(str, "%s JOIN album,title WHERE album.artist = artist.id AND title.album = album.id", str);
 		}
 		else if (q->fields & MASK_ALBUM)
 		{
-			sprintf(str, "%s JOIN album WHERE album.artist = artist.id", str, q->entries[FIELD_ALBUM]);
+			sprintf(str, "%s JOIN album WHERE album.artist = artist.id", str);
 		}
 	}
 	else if (q->last_field == FIELD_ALBUM)
@@ -230,33 +226,71 @@ static char * _query_to_string(metadatafs_query *q)
 		sprintf(str, "SELECT DISTINCT %s.name FROM album AS %s", _fields[FIELD_ALBUM], _fields[FIELD_ALBUM]);
 		if (q->fields & MASK_ARTIST)
 		{
-			sprintf(str, "%s JOIN artist WHERE album.artist = artist.id", str, q->entries[FIELD_ARTIST]);
+			if (q->fields & MASK_FILES)
+			{
+				sprintf(str, "%s JOIN artist,title,files WHERE artist.id = album.artist = artist.id AND title.album = album.id and and files.title = title.id", str);
+			}
+			else if (q->fields & MASK_TITLE)
+			{
+				sprintf(str, "%s JOIN artist,title WHERE album.artist = artist.id AND title.album = album.id", str);
+			}
+			else
+			{
+				sprintf(str, "%s JOIN artist WHERE album.artist = artist.id", str);
+			}
 		}
-		if (q->fields & MASK_TITLE)
+		else if (q->fields & MASK_FILES)
 		{
-			sprintf(str, "%s JOIN title WHERE title.album = album.id", str, q->entries[FIELD_TITLE]);
+			sprintf(str, "%s JOIN title,files WHERE title.album = album.id and and files.title = title.id", str);
+		}
+		else if (q->fields & MASK_TITLE)
+		{
+			sprintf(str, "%s JOIN title WHERE title.album = album.id", str);
 		}
 	}
 	else if (q->last_field == FIELD_TITLE)
 	{
 		sprintf(str, "SELECT DISTINCT %s.name FROM title AS %s", _fields[FIELD_TITLE], _fields[FIELD_TITLE]);
-		if (q->fields & MASK_ALBUM)
+		if (q->fields & MASK_FILES)
 		{
-			sprintf(str, "%s JOIN album WHERE album.id = title.album", str, q->entries[FIELD_ALBUM]);
+			if (q->fields & MASK_ALBUM)
+			{
+				sprintf(str, "%s JOIN files,album WHERE files.title = title.id AND album.id = title.album", str);
+			}
+			else if (q->fields & MASK_ARTIST)
+			{
+				sprintf(str, "%s JOIN files,album,artist WHERE files.title = title.id AND album.artist = artist.id AND title.album = album.id", str);
+			}
+			else
+			{
+				sprintf(str, "%s JOIN files WHERE files.title = title.id", str);
+			}
 		}
-		if (q->fields & MASK_ARTIST)
+		else if (q->fields & MASK_ALBUM)
 		{
-			sprintf(str, "%s JOIN album,artist WHERE album.artist = artist.id AND title.album = album.id", str, q->entries[FIELD_ARTIST]);
+			sprintf(str, "%s JOIN album WHERE album.id = title.album", str);
+		}
+		else if (q->fields & MASK_ARTIST)
+		{
+			sprintf(str, "%s JOIN album,artist WHERE album.artist = artist.id AND title.album = album.id", str);
 		}
 	}
 	else if (q->last_field == FIELD_FILES)
 	{
 		sprintf(str, "SELECT DISTINCT %s.file FROM files AS %s", _fields[FIELD_FILES], _fields[FIELD_FILES]);
-		if (q->fields & MASK_TITLE)
+		if (q->fields & MASK_ARTIST)
 		{
-			sprintf(str, "%s JOIN title WHERE files.title = title.id", str, q->entries[FIELD_TITLE]);
+			sprintf(str, "%s JOIN artist,album,title WHERE artist.id = album.artist AND album.id = title.album AND files.title = title.id", str);
 		}
-	}
+		else if (q->fields & MASK_ALBUM)
+		{
+			sprintf(str, "%s JOIN album,title WHERE album.id = title.album AND files.title = title.id", str);
+		}
+		else if (q->fields & MASK_TITLE)
+		{
+			sprintf(str, "%s JOIN title WHERE files.title = title.id", str);
+		}
+}
 	m = q->fields & ~(1 << q->last_field);
 	if (m)
 	{
@@ -298,6 +332,7 @@ static int metadatafs_readlink(const char *path, char *buf, size_t size)
 	return 0;
 }
 
+/* TODO add ENEXIST */
 static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		off_t offset, struct fuse_file_info *fi)
 {
@@ -438,17 +473,17 @@ static void db_cleanup(void)
 
 static int db_insert_artist(const char *artist)
 {
-	char query[PATH_MAX];
+	char *str;
 	sqlite3_stmt *stmt;
 	const char *tail;
 	int error;
 	int id = -1;
 
 	/* insert the new artist */
-	snprintf(query, PATH_MAX,
-			"INSERT OR IGNORE INTO artist (name) VALUES ('%s');",
+	str = sqlite3_mprintf("INSERT OR IGNORE INTO artist (name) VALUES ('%q');",
 			artist);
-	error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
 	if (error != SQLITE_OK)
 	{
 		printf("error artist %s\n", artist);
@@ -456,10 +491,10 @@ static int db_insert_artist(const char *artist)
 	sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 	/* get the id */
-	snprintf(query, PATH_MAX,
-			"SELECT id FROM artist WHERE name = '%s';",
+	str = sqlite3_mprintf("SELECT id FROM artist WHERE name = '%q';",
 			artist);
-	error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
 	if (error != SQLITE_OK)
 	{
 		printf("error artist %s\n", artist);
@@ -532,17 +567,17 @@ static int db_insert_album(const char *album, int aid)
 
 static int db_insert_title(const char *title, int album)
 {
-	char query[PATH_MAX];
+	char *str;
 	sqlite3_stmt *stmt;
 	const char *tail;
 	int error;
 	int id = -1;
 
 	/* insert the new album in case it does not exist already */
-	snprintf(query, PATH_MAX,
-			"SELECT id FROM title WHERE name = '%s' AND album = %d;",
+	str = sqlite3_mprintf("SELECT id FROM title WHERE name = '%q' AND album = %d;",
 			title, album);
-	error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
 	if (error != SQLITE_OK)
 	{
 		printf("1 error title %s\n", title);
@@ -551,20 +586,20 @@ static int db_insert_title(const char *title, int album)
 	if (sqlite3_step(stmt) != SQLITE_ROW)
 	{
 		sqlite3_finalize(stmt);
-		snprintf(query, PATH_MAX,
-				"INSERT OR IGNORE INTO title (name, album) VALUES ('%s',%d);",
+		str = sqlite3_mprintf("INSERT OR IGNORE INTO title (name, album) VALUES ('%q',%d);",
 				title, album);
-		error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+		error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+		sqlite3_free(str);
 		if (error != SQLITE_OK)
 		{
 			printf("2 error title %s\n", title);
 		}
 		sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
-		snprintf(query, PATH_MAX,
-				"SELECT id FROM title WHERE name = '%s' AND album = %d;",
+		str = sqlite3_mprintf("SELECT id FROM title WHERE name = '%q' AND album = %d;",
 				title, album);
-		error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+		error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+		sqlite3_free(str);
 		if (error != SQLITE_OK)
 		{
 			printf("3 error title %s\n", title);
