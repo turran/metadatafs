@@ -44,37 +44,44 @@ const char *_fields[] = {
 	"Artist",
 	"Title",
 	"Album",
+	"Files",
 	"Genre",
 };
 
+const char *_tables[] = {
+	"artist",
+	"title",
+	"album",
+	"files",
+	"genre",
+};
+
 const char *unknown = "Unknown";
-const char *files = "Files";
-#if 0
+
 typedef enum metadatafs_fields
 {
 	FIELD_ARTIST,
 	FIELD_TITLE,
 	FIELD_ALBUM,
+	FIELD_FILES,
 	FIELD_GENRE,
+	FIELDS
 } metadatafs_fields;
-#endif
 
-typedef enum metadatafs_fields
+typedef enum metadatafs_mask
 {
-	METADATAFS_ARTIST = (1 << 0),
-	METADATAFS_TITLE =  (1 << 1),
-	METADATAFS_ALBUM =  (1 << 2),
-	METADATAFS_GENRE =  (1 << 3),
-} metadatafs_fields;
-
-#define METADATAFS_FIELDS 4
+	MASK_ARTIST = (1 << FIELD_ARTIST),
+	MASK_TITLE =  (1 << FIELD_TITLE),
+	MASK_ALBUM =  (1 << FIELD_ALBUM),
+	MASK_FILES =  (1 << FIELD_FILES),
+	MASK_GENRE =  (1 << FIELD_GENRE),
+} metadatafs_mask;
 
 typedef struct _metadatafs_query
 {
-	char entries[METADATAFS_FIELDS][PATH_MAX];
-	metadatafs_fields fields;
-	metadatafs_fields last_field;
-	int files;
+	char entries[FIELDS][PATH_MAX];
+	metadatafs_mask fields;
+	int last_field;
 } metadatafs_query;
 
 static int _name_is_empty(char *str)
@@ -104,6 +111,7 @@ static int _path_to_query(char *path, metadatafs_query *q)
 	char *token;
 
 	memset(q, 0, sizeof(metadatafs_query));
+	q->last_field = -1;
 	token = strtok(path, "/");
         if (!token)
 		return 0;
@@ -112,7 +120,7 @@ static int _path_to_query(char *path, metadatafs_query *q)
 		int i;
 
 		/* TODO in case there's a Files set the files */
-		for (i = 0; i < METADATAFS_FIELDS; i++)
+		for (i = 0; i < FIELDS; i++)
 		{
 			if (!strncmp(token, _fields[i], strlen(_fields[i])))
 			{
@@ -122,7 +130,7 @@ static int _path_to_query(char *path, metadatafs_query *q)
 				token = strtok(NULL, "/");
 				if (!token)
 				{
-					q->last_field = (1 << i);
+					q->last_field = i;
 					break;
 				}
 				strncpy(q->entries[i], token, PATH_MAX);
@@ -190,40 +198,83 @@ end:
 		return strdup(unknown);
 }
 
+static inline void _append_join(char *str)
+{
+
+}
+
 static char * _query_to_string(metadatafs_query *q)
 {
 	char str[4096];
+	metadatafs_mask m;
 
 	str[0] = '\0';
-	if (q->last_field & METADATAFS_ARTIST)
+	if (q->last_field == FIELD_ARTIST)
 	{
-		strcpy(str, "SELECT DISTINCT artist.name FROM artist");
-		if (q->fields & METADATAFS_ALBUM)
+		sprintf(str, "SELECT DISTINCT %s.name FROM artist AS %s", _fields[FIELD_ARTIST], _fields[FIELD_ARTIST]);
+		if (q->fields & MASK_FILES)
 		{
-			sprintf(str, "%s JOIN album WHERE album.artist = artist.id and album.name = '%s';", str, q->entries[2]);
+			sprintf(str, "%s JOIN album,title,files WHERE album.artist = artist.id AND title.album = album.id and and files.title = title.id", str, q->entries[FIELD_FILES]);
+		}
+		else if (q->fields & MASK_TITLE)
+		{
+			sprintf(str, "%s JOIN album,title WHERE album.artist = artist.id AND title.album = album.id", str, q->entries[FIELD_TITLE]);
+		}
+		else if (q->fields & MASK_ALBUM)
+		{
+			sprintf(str, "%s JOIN album WHERE album.artist = artist.id", str, q->entries[FIELD_ALBUM]);
 		}
 	}
-	else if (q->last_field & METADATAFS_ALBUM)
+	else if (q->last_field == FIELD_ALBUM)
 	{
-		strcpy(str, "SELECT DISTINCT album.name FROM album");
-		if (q->fields & METADATAFS_ARTIST)
+		sprintf(str, "SELECT DISTINCT %s.name FROM album AS %s", _fields[FIELD_ALBUM], _fields[FIELD_ALBUM]);
+		if (q->fields & MASK_ARTIST)
 		{
-			sprintf(str, "%s JOIN artist WHERE album.artist = artist.id and artist.name = '%s';", str, q->entries[0]);
+			sprintf(str, "%s JOIN artist WHERE album.artist = artist.id", str, q->entries[FIELD_ARTIST]);
 		}
-		if (q->fields & METADATAFS_TITLE)
+		if (q->fields & MASK_TITLE)
 		{
-			sprintf(str, "%s JOIN title WHERE title.album = album.id and title.name = '%s';", str, q->entries[1]);
+			sprintf(str, "%s JOIN title WHERE title.album = album.id", str, q->entries[FIELD_TITLE]);
 		}
 	}
-	else if (q->last_field & METADATAFS_TITLE)
+	else if (q->last_field == FIELD_TITLE)
 	{
-		strcpy(str, "SELECT DISTINCT title.name FROM title");
-		if (q->fields & METADATAFS_ALBUM)
+		sprintf(str, "SELECT DISTINCT %s.name FROM title AS %s", _fields[FIELD_TITLE], _fields[FIELD_TITLE]);
+		if (q->fields & MASK_ALBUM)
 		{
-			sprintf(str, "%s JOIN album WHERE album.id = title.album and album.name = '%s';", str, q->entries[2]);
+			sprintf(str, "%s JOIN album WHERE album.id = title.album", str, q->entries[FIELD_ALBUM]);
+		}
+		if (q->fields & MASK_ARTIST)
+		{
+			sprintf(str, "%s JOIN album,artist WHERE album.artist = artist.id AND title.album = album.id", str, q->entries[FIELD_ARTIST]);
 		}
 	}
+	else if (q->last_field == FIELD_FILES)
+	{
+		sprintf(str, "SELECT DISTINCT %s.file FROM files AS %s", _fields[FIELD_FILES], _fields[FIELD_FILES]);
+		if (q->fields & MASK_TITLE)
+		{
+			sprintf(str, "%s JOIN title WHERE files.title = title.id", str, q->entries[FIELD_TITLE]);
+		}
+	}
+	m = q->fields & ~(1 << q->last_field);
+	if (m)
+	{
+		int i;
 
+		/* the conditionals */
+		for (i = 0; i < FIELDS; i++)
+		{
+			if (m & (1 << i))
+			{
+				if (i == FIELD_FILES)
+					sprintf(str, "%s AND %s.file = '%s'", str, _fields[i], q->entries[i]);
+				else
+					sprintf(str, "%s AND %s.name = '%s'", str, _fields[i], q->entries[i]);
+			}
+		}
+	}
+	printf("QUERY = %s\n", str);
 	return strdup(str);
 }
 
@@ -258,17 +309,16 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 	free(tmp);
 	/* the last directory on the path is not a metadata field */
 	printf("readdir %s %d %d\n", path, q.last_field, q.fields);
-	if (!q.last_field)
+	if (q.last_field < 0)
 	{
 		int i = 0;
-		metadatafs_fields f;
+		metadatafs_mask f;
 
-
-		/*  path ended on Files */
-		if (!strncmp(path + strlen(path) - strlen(files), files, strlen(files)))
+		if (q.fields & MASK_FILES)
 			goto end;
+
 		/* invert the flags found on the path */
-		f = ~q.fields & ((1 << METADATAFS_FIELDS) - 1);
+		f = ~q.fields & ((1 << FIELDS) - 1);
 		/* append default directories */
 		while (f)
 		{
@@ -280,8 +330,6 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 			f >>= 1;
 			i++;
 		}
-		/* always create the special directory Files */
-		filler(buf, files, NULL, 0);
 	}
 	/* given the path, select the needed artist/album/whatever */
 	else
@@ -333,7 +381,7 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 		int i;
 
 		file = _path_last_char(path, '/');
-		for (i = 0; i < METADATAFS_FIELDS; i++)
+		for (i = 0; i < FIELDS; i++)
 		{
 			if (!strncmp(file, _fields[i], strlen(_fields[i])))
 			{
@@ -618,6 +666,7 @@ static int db_setup(void)
 	sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 
+	/* TODO add a year */
 	error = sqlite3_prepare(db,
 			"CREATE TABLE IF NOT EXISTS "
 			"album(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, artist INTEGER, "
@@ -631,6 +680,7 @@ static int db_setup(void)
 	sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 
+	/* TODO add the genre */
 	error = sqlite3_prepare(db,
 			"CREATE TABLE IF NOT EXISTS "
 			"title(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, album INTEGER, "
