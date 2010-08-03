@@ -30,6 +30,12 @@ AC_HEADER_STDC
 AC_C_CONST
 AC_C_BIGENDIAN
 
+AC_CHECK_HEADER([sys/inotify.h], [have_inotify=yes],[have_inotify=no])
+if test "x$have_inotify" = "xyes"; then
+	AC_DEFINE(HAVE_INOTIFY, [1], [Build support for inotify])
+fi
+AM_CONDITIONAL(HAVE_INOTIFY, test "x$have_inotify" = "xyes")
+
 # Checks for packages which use pkg-config.
 PKG_CHECK_MODULES([fuse], [fuse >= 2.6.0])
 PKG_CHECK_MODULES([id3tag], [id3tag])
@@ -54,6 +60,8 @@ echo
 echo
 echo "Configuration Options Summary:"
 echo "Installation Path...........................: ${prefix}"
+echo "Features....................................:"
+echo "  Inotify                                     ${have_inotify}"
 echo
 echo "Now type 'make' ('gmake' on some systems) to compile $PACKAGE,"
 echo "and then afterwards as root (or the user who will install this), type"
