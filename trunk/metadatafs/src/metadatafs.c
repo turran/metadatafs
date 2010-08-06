@@ -2,6 +2,8 @@
 #include "config.h"
 #endif
 
+#include "metadatafs.h"
+
 #define FUSE_USE_VERSION 26
 #include <fuse.h>
 #include <stdio.h>
@@ -14,7 +16,6 @@
 #include <limits.h>
 #include <sys/statvfs.h>
 #include <sqlite3.h>
-#include <id3tag.h>
 #include <pthread.h>
 
 #if HAVE_INOTIFY
@@ -35,6 +36,7 @@
  * - whenever a file is moved into another directory, update the metadata of the
  * file
  * - add a header file
+ * - move the libid3tag into a backend
  */
 /*============================================================================*
  *                                  Local                                     *
@@ -72,8 +74,6 @@ const char *_tables[] = {
 	"genre",
 };
 
-const char *unknown = "Unknown";
-
 typedef enum metadatafs_fields
 {
 	FIELD_ARTIST,
@@ -100,30 +100,11 @@ typedef struct _metadatafs_query
 	int last_field;
 } metadatafs_query;
 
-/******************************************************************************
- *                                 Helpers                                    *
- ******************************************************************************/
-static int _name_is_empty(char *str)
-{
-	char *tmp = str;
+static metadatafs_backend *_backends[] = {
+	&libid3tag_backend,
+	NULL,
+};
 
-	/* empty */
-	if (*str == '\0') return 1;
-	/* only spaces */
-	while (tmp && *tmp == ' ') tmp++;
-	if (tmp == str + strlen(str) + 1) return 1;
-	else return 0;
-}
-
-static char * _path_last_char(char *path, char token)
-{
-	char *tmp;
-
-	tmp = path + strlen(path) - 1;
-	while (tmp >= path && *tmp != token) tmp--;
-
-	return tmp + 1;
-}
 /******************************************************************************
  *                                  Queries                                   *
  ******************************************************************************/
@@ -278,6 +259,15 @@ static char * _query_to_string(metadatafs_query *q)
 	}
 	//printf("QUERY = %s\n", str);
 	return strdup(str);
+}
+
+static void _query_dump(metadatafs_query *q)
+{
+	printf("flags = %08x\n", q->fields);
+	printf("artist = %s\n", q->fields & MASK_ARTIST ? q->entries[FIELD_ARTIST] : "<none>");
+	printf("album = %s\n", q->fields & MASK_ALBUM ? q->entries[FIELD_ALBUM] : "<none>");
+	printf("title = %s\n", q->fields & MASK_TITLE ? q->entries[FIELD_TITLE] : "<none>");
+	printf("file = %s\n", q->fields & MASK_FILES ? q->entries[FIELD_FILES] : "<none>");
 }
 
 /******************************************************************************
@@ -563,93 +553,27 @@ static int db_setup(void)
 	return 1;
 }
 /******************************************************************************
- *                              ID3 functions                                 *
- ******************************************************************************/
-static char * _tag_get_text(struct id3_tag *tag, const char *name)
-{
-	struct id3_frame *frame;
-	union id3_field *field;
-	enum id3_field_textencoding enc;
-	char *title = NULL;
-
-	frame = id3_tag_findframe(tag, name, 0);
-	if (!frame) goto end;
-
-	field = id3_frame_field(frame, 0);
-	enc = id3_field_gettextencoding(field);
-
-	field = id3_frame_field(frame, 1);
-	if (!field) goto end;
-
-	if (enc != ID3_FIELD_TEXTENCODING_ISO_8859_1 && enc != ID3_FIELD_TEXTENCODING_UTF_8)
-		goto end;
-
-	switch (id3_field_type(field))
-	{
-		case ID3_FIELD_TYPE_STRING:
-		title = id3_ucs4_utf8duplicate(id3_field_getstring(field));
-		break;
-
-		case ID3_FIELD_TYPE_STRINGFULL:
-		title = id3_ucs4_utf8duplicate(id3_field_getfullstring(field));
-		break;
-
-		case ID3_FIELD_TYPE_STRINGLIST:
-		{
-			unsigned int i;
-			char alist[PATH_MAX];
-			int nstrings;
-
-			alist[0] = '\0';
-			nstrings = id3_field_getnstrings(field);
-			//printf("# strings %d\n", id3_field_getnstrings(field));
-			for (i = 0; i < nstrings; i++)
-			{
-				char *tmp;
-				id3_ucs4_t const *ucs4;
-
-				ucs4 = id3_field_getstrings(field, i);
-				if (!ucs4) continue;
-				tmp = id3_ucs4_utf8duplicate(ucs4);
-				if (i != 0)
-					strncat(alist, " ", PATH_MAX - strlen(alist));
-				strncat(alist, tmp, PATH_MAX - strlen(alist));
-				free(tmp);
-			}
-			title = strdup(alist);
-		}
-		break;
-	}
-end:
-	if (title && !_name_is_empty(title))
-		return title;
-	else
-		return strdup(unknown);
-}
-
-static inline char * _tag_get_title(struct id3_tag *tag)
-{
-	return _tag_get_text(tag, ID3_FRAME_TITLE);
-}
-
-static inline char * _tag_get_album(struct id3_tag *tag)
-{
-	return _tag_get_text(tag, ID3_FRAME_ALBUM);
-}
-
-static inline char * _tag_get_artist(struct id3_tag *tag)
-{
-	return _tag_get_text(tag, ID3_FRAME_ARTIST);
-}
-/******************************************************************************
  *                               metadatafs                                   *
  ******************************************************************************/
+static metadatafs_backend * _backend_get(char *file)
+{
+	metadatafs_backend **it = _backends;
+
+	while (it && *it)
+	{
+		metadatafs_backend *b = *it;
+		if (b->supported(file))
+			return b;
+		it++;
+	}
+	return NULL;
+}
+
 static void _scan(const char *path)
 {
 	DIR *dp;
 	struct dirent *de;
 
-	//printf("scanning %s\n", path);
 	dp = opendir(path);
 	if (!dp)
 	{
@@ -682,44 +606,39 @@ static void _scan(const char *path)
 		}
 		else if (S_ISREG(st.st_mode))
 		{
-			char *extension;
+			metadatafs_backend *backend;
+			int id;
+			char *str;
+			void *handle;
 
-			extension = _path_last_char(de->d_name, '.');
-			if (!strcmp(extension, "mp3"))
-			{
-				struct id3_file *file;
-				struct id3_tag *tag;
-				char *str;
-				int id;
+			if (!(backend = _backend_get(realfile)))
+				continue;
 
-				//printf("processing file %s\n", realfile);
-				if (!db_file_changed(realfile, st.st_mtime))
-					continue;
+			//printf("processing file %s\n", realfile);
+			if (!db_file_changed(realfile, st.st_mtime))
+				continue;
 
-				file = id3_file_open(realfile, ID3_FILE_MODE_READONLY);
-				tag = id3_file_tag(file);
+			handle = backend->open(realfile);
+			/* artist */
+			str = backend->artist_get(handle);
+			id = db_insert_artist(str);
+			free(str);
+			if (id < 0) goto end;
+			/* album */
+			str = backend->album_get(handle);
+			id = db_insert_album(str, id);
+			free(str);
+			if (id < 0) goto end;
+			/* title */
+			str = backend->title_get(handle);
+			id = db_insert_title(str, id);
+			free(str);
+			if (id < 0) goto end;
 
-				/* artist */
-				str = _tag_get_artist(tag);
-				id = db_insert_artist(str);
-				free(str);
-				if (id < 0) goto end;
-				/* album */
-				str = _tag_get_album(tag);
-				id = db_insert_album(str, id);
-				free(str);
-				if (id < 0) goto end;
-				/* title */
-				str = _tag_get_title(tag);
-				id = db_insert_title(str, id);
-				free(str);
-				if (id < 0) goto end;
-
-				/* file */
-				db_insert_file(realfile, st.st_mtime, id);
+			/* file */
+			db_insert_file(realfile, st.st_mtime, id);
 end:
-				id3_file_close(file);
-			}
+			backend->close(handle);
 		}
 	}
 	closedir(dp);
@@ -729,6 +648,7 @@ static void * _scanner(void *data)
 {
 	metadatafs *mfs = data;
 
+	printf("path = %p\n", mfs->basepath);
 	_scan(mfs->basepath);
 	return NULL;
 }
@@ -839,11 +759,17 @@ static metadatafs * metadatafs_new(char *path)
 
 static void metadatafs_free(metadatafs *mfs)
 {
-	pthread_cancel(mfs->scanner);
-	pthread_join(mfs->scanner, NULL);
+	if (mfs->scanner)
+	{
+		pthread_cancel(mfs->scanner);
+		pthread_join(mfs->scanner, NULL);
+	}
 #if HAVE_INOTIFY
-	pthread_cancel(mfs->monitor);
-	pthread_join(mfs->monitor, NULL);
+	if (mfs->monitor)
+	{
+		pthread_cancel(mfs->monitor);
+		pthread_join(mfs->monitor, NULL);
+	}
 #endif
 	free(mfs->basepath);
 	free(mfs);
@@ -950,7 +876,7 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 		int is_field = 0;
 		int i;
 
-		file = _path_last_char(path, '/');
+		file = metadatafs_path_last_char(path, '/');
 		for (i = 0; i < FIELDS; i++)
 		{
 			if (!strncmp(file, _fields[i], strlen(_fields[i])))
@@ -997,9 +923,27 @@ static int metadatafs_statfs(const char *path, struct statvfs *stbuf)
 	return 0;
 }
 
+/**
+ * Here we handle all the logic of the mv operation
+ */
 int metadatafs_rename(const char *orig, const char *dest)
 {
+	metadatafs_query src;
+	metadatafs_query dst;
+	char *tmp;
+	int ret;
+
+	tmp = strdup(orig);
+	ret = _path_to_query(tmp, &src);
+	free(tmp);
+
+	tmp = strdup(dest);
+	ret = _path_to_query(tmp, &dst);
+	free(tmp);
+
 	printf("rename %s %s!!!\n", orig, dest);
+	_query_dump(&src);
+	_query_dump(&dst);
 	return -EACCES;
 }
 
@@ -1039,6 +983,31 @@ static struct fuse_operations metadatafs_ops = {
 /*============================================================================*
  *                                 Global                                     *
  *============================================================================*/
+/******************************************************************************
+ *                                 Helpers                                    *
+ ******************************************************************************/
+int metadatafs_name_is_empty(char *str)
+{
+	char *tmp = str;
+
+	/* empty */
+	if (*str == '\0') return 1;
+	/* only spaces */
+	while (tmp && *tmp == ' ') tmp++;
+	if (tmp == str + strlen(str) + 1) return 1;
+	else return 0;
+}
+
+char * metadatafs_path_last_char(char *path, char token)
+{
+	char *tmp;
+
+	tmp = path + strlen(path) - 1;
+	while (tmp >= path && *tmp != token) tmp--;
+
+	return tmp + 1;
+}
+
 int main(int argc, char **argv)
 {
 	struct fuse_args args;
