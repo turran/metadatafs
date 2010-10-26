@@ -44,6 +44,7 @@ PKG_CHECK_MODULES([sqlite3], [sqlite3])
 AC_OUTPUT([
 Makefile
 src/Makefile
+tools/Makefile
 ],[
 ])
 
