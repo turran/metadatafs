@@ -3,6 +3,7 @@
 #endif
 
 #include "metadatafs.h"
+#include "libmetadatafs.h"
 
 #define FUSE_USE_VERSION 26
 #include <fuse.h>
@@ -99,11 +100,6 @@ typedef struct _metadatafs_query
 	metadatafs_mask fields;
 	int last_field;
 } metadatafs_query;
-
-static metadatafs_backend *_backends[] = {
-	&libid3tag_backend,
-	NULL,
-};
 
 /******************************************************************************
  *                                  Queries                                   *
@@ -555,20 +551,6 @@ static int db_setup(void)
 /******************************************************************************
  *                               metadatafs                                   *
  ******************************************************************************/
-static metadatafs_backend * _backend_get(char *file)
-{
-	metadatafs_backend **it = _backends;
-
-	while (it && *it)
-	{
-		metadatafs_backend *b = *it;
-		if (b->supported(file))
-			return b;
-		it++;
-	}
-	return NULL;
-}
-
 static void _scan(const char *path)
 {
 	DIR *dp;
@@ -606,31 +588,29 @@ static void _scan(const char *path)
 		}
 		else if (S_ISREG(st.st_mode))
 		{
-			metadatafs_backend *backend;
 			int id;
 			char *str;
 			void *handle;
-
-			if (!(backend = _backend_get(realfile)))
-				continue;
 
 			//printf("processing file %s\n", realfile);
 			if (!db_file_changed(realfile, st.st_mtime))
 				continue;
 
-			handle = backend->open(realfile);
+			handle = libmetadatafs_open(realfile);
+			if (!handle) continue;
+
 			/* artist */
-			str = backend->artist_get(handle);
+			str = libmetadatafs_artist_get(handle);
 			id = db_insert_artist(str);
 			free(str);
 			if (id < 0) goto end;
 			/* album */
-			str = backend->album_get(handle);
+			str = libmetadatafs_album_get(handle);
 			id = db_insert_album(str, id);
 			free(str);
 			if (id < 0) goto end;
 			/* title */
-			str = backend->title_get(handle);
+			str = libmetadatafs_title_get(handle);
 			id = db_insert_title(str, id);
 			free(str);
 			if (id < 0) goto end;
@@ -638,7 +618,7 @@ static void _scan(const char *path)
 			/* file */
 			db_insert_file(realfile, st.st_mtime, id);
 end:
-			backend->close(handle);
+			libmetadatafs_close(handle);
 		}
 	}
 	closedir(dp);
@@ -876,7 +856,7 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 		int is_field = 0;
 		int i;
 
-		file = metadatafs_path_last_char(path, '/');
+		file = libmetadatafs_path_last_char(path, '/');
 		for (i = 0; i < FIELDS; i++)
 		{
 			if (!strncmp(file, _fields[i], strlen(_fields[i])))
@@ -983,30 +963,6 @@ static struct fuse_operations metadatafs_ops = {
 /*============================================================================*
  *                                 Global                                     *
  *============================================================================*/
-/******************************************************************************
- *                                 Helpers                                    *
- ******************************************************************************/
-int metadatafs_name_is_empty(char *str)
-{
-	char *tmp = str;
-
-	/* empty */
-	if (*str == '\0') return 1;
-	/* only spaces */
-	while (tmp && *tmp == ' ') tmp++;
-	if (tmp == str + strlen(str) + 1) return 1;
-	else return 0;
-}
-
-char * metadatafs_path_last_char(char *path, char token)
-{
-	char *tmp;
-
-	tmp = path + strlen(path) - 1;
-	while (tmp >= path && *tmp != token) tmp--;
-
-	return tmp + 1;
-}
 
 int main(int argc, char **argv)
 {
