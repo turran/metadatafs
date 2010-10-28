@@ -1,4 +1,4 @@
-#include "metadatafs.h"
+#include "libmetadatafs.h"
 #include <id3tag.h>
 #include <string.h>
 #include <limits.h>
@@ -9,6 +9,12 @@
  *============================================================================*/
 static const char *unknown = "Unknown";
 
+static void _tag_set_data(struct id3_tag *tag, const char *name, const char *data)
+{
+
+}
+
+/* TODO rename this to set data */
 static char * _tag_get_text(struct id3_tag *tag, const char *name)
 {
 	struct id3_frame *frame;
@@ -65,7 +71,7 @@ static char * _tag_get_text(struct id3_tag *tag, const char *name)
 		break;
 	}
 end:
-	if (title && !metadatafs_name_is_empty(title))
+	if (title && !libmetadatafs_name_is_empty(title))
 		return title;
 	else
 		return strdup(unknown);
@@ -78,7 +84,7 @@ static int _supported(char *file)
 {
 	char *extension;
 
-	extension = metadatafs_path_last_char(file, '.');
+	extension = libmetadatafs_path_last_char(file, '.');
 	if (!strcmp(extension, "mp3"))
 		return 1;
 	return 0;
@@ -128,7 +134,7 @@ static char * _album_get(void *handle)
 /*============================================================================*
  *                                 Global                                     *
  *============================================================================*/
-metadatafs_backend libid3tag_backend = {
+libmetadatafs_backend libid3tag_backend = {
 	.supported = _supported,
 	.open = _open,
 	.close = _close,

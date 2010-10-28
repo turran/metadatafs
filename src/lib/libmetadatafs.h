@@ -1,7 +1,7 @@
-#ifndef _METADATAFS_H
-#define _METADATAFS_H
+#ifndef _LIBMETADATAFS_H
+#define _LIBMETADATAFS_H
 
-typedef struct _metadatafs_backend
+typedef struct _libmetadatafs_backend
 {
 	int (*supported)(char *file);
 	void * (*open)(char *file);
@@ -14,11 +14,15 @@ typedef struct _metadatafs_backend
 	void (*title_set)(void *handle, char *title);
 	void (*album_set)(void *handle, char *album);
 	*/
-} metadatafs_backend;
+} libmetadatafs_backend;
+
+void * libmetadatafs_open(char *file);
+void libmetadatafs_close(void *handle);
+char * libmetadatafs_artist_get(void *handle);
+char * libmetadatafs_album_get(void *handle);
+char * libmetadatafs_title_get(void *handle);
 
 int metadatafs_name_is_empty(char *str);
 char * metadatafs_path_last_char(char *path, char token);
-
-extern metadatafs_backend libid3tag_backend;
 
 #endif
