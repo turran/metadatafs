@@ -222,7 +222,7 @@ static char * _query_to_string(metadatafs_query *q)
 	}
 	else if (q->last_field == FIELD_FILES)
 	{
-		sprintf(str, "SELECT DISTINCT %s.file FROM files AS %s", _fields[FIELD_FILES], _fields[FIELD_FILES]);
+		sprintf(str, "SELECT DISTINCT %s.id FROM files AS %s", _fields[FIELD_FILES], _fields[FIELD_FILES]);
 		if (q->fields & MASK_ARTIST)
 		{
 			sprintf(str, "%s JOIN artist,album,title WHERE artist.id = album.artist AND album.id = title.album AND files.title = title.id", str);
@@ -759,6 +759,39 @@ static void metadatafs_free(metadatafs *mfs)
  ******************************************************************************/
 static int metadatafs_readlink(const char *path, char *buf, size_t size)
 {
+	char *str;
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+	int id;
+	char tmp[PATH_MAX];
+	char *file;
+
+	/* remove the extension */
+	file = libmetadatafs_path_last_char(path, '/');
+	strncpy(tmp, file, strlen(file) - 4 /* .mp3 */);
+	id = strtol(tmp, NULL, 10);
+	str = sqlite3_mprintf("SELECT file FROM files WHERE id = %d", id);
+	/* check if the file exists if so check the mtime and compare */
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
+	if (error != SQLITE_OK)
+	{
+		printf("1 error file %s\n", path);
+		return 1;
+	}
+	if (sqlite3_step(stmt) != SQLITE_ROW)
+	{
+		return -EEXIST;
+	}
+	else
+	{
+		const unsigned char *realfile;
+
+		realfile = sqlite3_column_text(stmt, 0);
+		sqlite3_finalize(stmt);
+		strncpy(buf, realfile, size);
+	}
 	return 0;
 }
 
@@ -822,14 +855,31 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 			return -ENOENT;
 			sqlite3_finalize(stmt);
 		}
-		do
-		{
-			const unsigned char *name;
 
-			name = sqlite3_column_text(stmt, 0);
-			if (filler(buf, name, NULL, 0))
-				break;
-		} while (sqlite3_step(stmt) == SQLITE_ROW);
+		if (q.last_field == FIELD_FILES)
+		{
+			do
+			{
+				unsigned char name[PATH_MAX];
+				int id;
+
+				id = sqlite3_column_int(stmt, 0);
+				snprintf(name, PATH_MAX, "%d.mp3", id);
+				if (filler(buf, name, NULL, 0))
+					break;
+			} while (sqlite3_step(stmt) == SQLITE_ROW);
+		}
+		else
+		{
+			do
+			{
+				const unsigned char *name;
+
+				name = sqlite3_column_text(stmt, 0);
+				if (filler(buf, name, NULL, 0))
+					break;
+			} while (sqlite3_step(stmt) == SQLITE_ROW);
+		}
 		sqlite3_finalize(stmt);
 	}
 end:
@@ -872,7 +922,7 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 		{
 			if (!strncmp(file + strlen(file) - 3, "mp3", 3))
 			{
-				stbuf->st_mode = S_IFREG | 0644;
+				stbuf->st_mode = S_IFLNK | 0644;
 				stbuf->st_nlink = 1;
 
 			}
