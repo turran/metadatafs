@@ -248,6 +248,41 @@ static void _query_dump(metadatafs_query *q)
 	printf("file = %s\n", q->fields & MASK_FILES ? q->entries[FIELD_FILES] : "<none>");
 }
 
+static inline char * _get_last_delim(const char *start, const char *end, char delim)
+{
+	char *tmp;
+
+	for (tmp = end; tmp >= start; tmp--)
+	{
+		if (*tmp == delim)
+			break;
+	}
+	return ++tmp;
+}
+
+static inline char * _get_last_field(const char *str, int *field)
+{
+	char *prv;
+	char *tmp;
+	int i;
+
+	prv = tmp = str + strlen(str);
+again:
+	tmp = _get_last_delim(str, tmp, '/');
+	for (i = 0; i < FIELDS; i++)
+	{
+		if (!strncmp(tmp, _fields[i], strlen(_fields[i])))
+			break;
+	}
+	if (i == FIELDS && tmp >= str + 2)
+	{
+		prv = tmp;
+		tmp -= 2;
+		goto again;
+	}
+	*field = i;
+	return prv;
+}
 /******************************************************************************
  *                                 Database                                   *
  ******************************************************************************/
@@ -863,79 +898,83 @@ end:
 
 static int metadatafs_getattr(const char *path, struct stat *stbuf)
 {
+	char *file;
+	int field = 0;
+	int i;
+
 	memset(stbuf, 0, sizeof(struct stat));
+	/* simplest case */
 	if (!strcmp(path, "/"))
 	{
 		stbuf->st_mode = S_IFDIR | 0755;
 		stbuf->st_nlink = 2;
+		return 0;
 	}
-	else
+	/* first check if the last entry is a field */
+	file = _get_last_delim(path, path + strlen(path), '/');
+	for (i = 0; i < FIELDS; i++)
 	{
-		char *file;
-		int is_field = 0;
-		int i;
-
-		/* FIXME get the last entry on the path */
-		for (file = path + strlen(path); file >= path; file--)
+		if (!strncmp(file, _fields[i], strlen(_fields[i])))
 		{
-			if (*file == '/')
-			{
-				file++;
-				break;
-			}
+			stbuf->st_mode = S_IFDIR | 0755;
+			stbuf->st_nlink = 2;
+			return 0;
 		}
-		for (i = 0; i < FIELDS; i++)
+	}
+	/* now get the last valid field from the file */
+	file = _get_last_field(path, &field);
+	printf("field = %d file = %s\n", field, file);
+	/* set the default mode */
+	stbuf->st_mode = S_IFDIR | 0755;
+	stbuf->st_nlink = 2;
+
+	switch (field)
+	{
+		/* if previous dir is Files then all the contents must be links */
+		case FIELD_FILES:
 		{
-			if (!strncmp(file, _fields[i], strlen(_fields[i])))
-			{
-				stbuf->st_mode = S_IFDIR | 0755;
-				stbuf->st_nlink = 2;
-				is_field = 1;
-				break;
-			}
+			Mdfs_File *f;
+
+			f = mdfs_file_get_from_id(db, atoi(file));
+			if (!f) return -ENOENT;
+			mdfs_file_free(f);
+			stbuf->st_mode = S_IFLNK | 0644;
+			stbuf->st_nlink = 1;
 		}
-		if (!is_field)
+		break;
+
+		case FIELD_ALBUM:
 		{
-			char *last_field;
-
-			for (last_field = file - 2; last_field >= path; last_field--)
-			{
-				if (*last_field == '/')
-				{
-					last_field++;
-					break;
-				}
-			}
-			for (i = 0; i < FIELDS; i++)
-			{
-				if (!strncmp(last_field, _fields[i], strlen(_fields[i])))
-					break;
-			}
-			switch (i)
-			{
-				/* if previous dir is Files then all the contents must be links */
-				case FIELD_FILES:
-				{
-					Mdfs_File *f;
-
-					f = mdfs_file_get_from_id(db, atoi(file));
-					if (!f) return -ENOENT;
-					mdfs_file_free(f);
-					stbuf->st_mode = S_IFLNK | 0644;
-					stbuf->st_nlink = 1;				
-				}
-				break;
-
-				case FIELDS:
-				return -ENOENT;
-				break;
-
-				default:
-				stbuf->st_mode = S_IFDIR | 0755;
-				stbuf->st_nlink = 2;
-				break;	
-			}
+			Mdfs_Album *album;
+			album = mdfs_album_get_from_name(db, file);
+			if (!album) return -ENOENT;
+			mdfs_album_free(album);
 		}
+		break;
+
+		case FIELD_ARTIST:
+		{
+			Mdfs_Artist *artist;
+			artist = mdfs_artist_get(db, file);
+			if (!artist) return -ENOENT;
+			mdfs_artist_free(artist);
+		}
+		break;
+
+		/* FIXME, this only handles correctly the case of /Title/T, /Artist/A/Title/T
+		 * must be double checked on the artist too
+		 */
+		case FIELD_TITLE:
+		{
+			Mdfs_Title *title;
+			title = mdfs_title_get_from_name(db, file);
+			if (!title) return -ENOENT;
+			mdfs_title_free(title);
+		}
+		break;
+
+		default:
+		return -ENOENT;
 	}
 	/* check the last metadata directory */
 	return 0;
@@ -1001,7 +1040,6 @@ static void * metadatafs_init(struct fuse_conn_info *conn)
 #endif
 	return NULL;
 }
-
 
 static struct fuse_operations metadatafs_ops = {
 	.getattr  = metadatafs_getattr,

@@ -35,6 +35,33 @@ static Mdfs_Title * mdfs_title_new_internal(unsigned int id, const char *name,
 /*============================================================================*
  *                                 Global                                     *
  *============================================================================*/
+Mdfs_Title * mdfs_title_get_from_name(sqlite3 *db, const char *name)
+{
+	Mdfs_Title *title;
+	char *str;
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+	int id;
+	unsigned int album_id;
+
+	str = sqlite3_mprintf("SELECT id,album FROM title WHERE name = '%q'",
+			name);
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
+	if (error != SQLITE_OK)
+		return NULL;
+	if (sqlite3_step(stmt) != SQLITE_ROW)
+		return NULL;
+	id = sqlite3_column_int(stmt, 0);
+	album_id = sqlite3_column_int(stmt, 1);
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+
+	title = mdfs_title_new_internal(id, name, NULL);
+	return title;
+}
+
 Mdfs_Title * mdfs_title_get(sqlite3 *db, const char *name, Mdfs_Album *album)
 {
 	Mdfs_Title *title;
@@ -84,7 +111,8 @@ Mdfs_Title * mdfs_title_new(sqlite3 *db, const char *name, Mdfs_Album *album)
 void mdfs_title_free(Mdfs_Title *title)
 {
 	free(title->name);
-	mdfs_album_free(title->album);
+	if (title->album)
+		mdfs_album_free(title->album);
 	free(title);
 }
 
