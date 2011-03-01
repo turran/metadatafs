@@ -1,31 +1,7 @@
-#ifdef HAVE_CONFIG_H
-#include "config.h"
-#endif
-
 #include "metadatafs.h"
 #include "libmetadatafs.h"
 
-#define FUSE_USE_VERSION 26
-#include <fuse.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <dirent.h>
-#include <errno.h>
-#include <limits.h>
-#include <sys/statvfs.h>
-#include <sqlite3.h>
-#include <pthread.h>
-
-#if HAVE_INOTIFY
-#include <sys/inotify.h>
-/* size of the event structure, not counting name */
-#define EVENT_SIZE  (sizeof (struct inotify_event))
-/* reasonable guess as to size of 1024 events */
-#define BUF_LEN        1024 * (EVENT_SIZE + 16)
-#endif
+#define BLOCK
 
 /*
  * TODO
@@ -38,6 +14,12 @@
  * file
  * - add a header file
  * - move the libid3tag into a backend
+ *
+ * - artist
+ * -- album
+ * --- title
+ * ---- file
+ *
  */
 /*============================================================================*
  *                                  Local                                     *
@@ -759,43 +741,32 @@ static void metadatafs_free(metadatafs *mfs)
  ******************************************************************************/
 static int metadatafs_readlink(const char *path, char *buf, size_t size)
 {
-	char *str;
-	sqlite3_stmt *stmt;
-	const char *tail;
-	int error;
+	Mdfs_File *file;
 	int id;
-	char tmp[PATH_MAX];
-	char *file;
+	char *tmp;
+	char *last;
+	size_t len;
 
-	/* remove the extension */
-	file = libmetadatafs_path_last_char(path, '/');
-	strncpy(tmp, file, strlen(file) - 4 /* .mp3 */);
-	id = strtol(tmp, NULL, 10);
-	str = sqlite3_mprintf("SELECT file FROM files WHERE id = %d", id);
-	/* check if the file exists if so check the mtime and compare */
-	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
-	sqlite3_free(str);
-	if (error != SQLITE_OK)
+	/* FIXME get the last entry on the path */
+	for (tmp = path + strlen(path); tmp != path; tmp--)
 	{
-		printf("1 error file %s\n", path);
-		return 1;
+		if (*tmp == '/')
+		{
+			tmp++;
+			break;
+		}
 	}
-	if (sqlite3_step(stmt) != SQLITE_ROW)
-	{
-		return -EEXIST;
-	}
-	else
-	{
-		const unsigned char *realfile;
+	file = mdfs_file_get_from_id(db, atoi(tmp));
+	if (!file)
+		return -ENOENT;
 
-		realfile = sqlite3_column_text(stmt, 0);
-		sqlite3_finalize(stmt);
-		strncpy(buf, realfile, size);
-	}
+	strncpy(buf, file->path, size);
+	buf[size - 1] = '\0';
+	mdfs_file_free(file);
+
 	return 0;
 }
 
-/* TODO add ENEXIST */
 static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
 		off_t offset, struct fuse_file_info *fi)
 {
@@ -864,7 +835,7 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 				int id;
 
 				id = sqlite3_column_int(stmt, 0);
-				snprintf(name, PATH_MAX, "%d.mp3", id);
+				snprintf(name, PATH_MAX, "%08d", id);
 				if (filler(buf, name, NULL, 0))
 					break;
 			} while (sqlite3_step(stmt) == SQLITE_ROW);
@@ -892,8 +863,6 @@ end:
 
 static int metadatafs_getattr(const char *path, struct stat *stbuf)
 {
-	int ret = 0;
-
 	memset(stbuf, 0, sizeof(struct stat));
 	if (!strcmp(path, "/"))
 	{
@@ -906,7 +875,15 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 		int is_field = 0;
 		int i;
 
-		file = libmetadatafs_path_last_char(path, '/');
+		/* FIXME get the last entry on the path */
+		for (file = path + strlen(path); file != path; file--)
+		{
+			if (*file == '/')
+			{
+				file++;
+				break;
+			}
+		}
 		for (i = 0; i < FIELDS; i++)
 		{
 			if (!strncmp(file, _fields[i], strlen(_fields[i])))
@@ -917,14 +894,16 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 				break;
 			}
 		}
-		/* regular file or entry on the db */
+		/* if previous dir is Files then all the contents must be links */
 		if (!is_field)
 		{
-			if (!strncmp(file + strlen(file) - 3, "mp3", 3))
+			char *tmp;
+
+			for (tmp = file - 2; tmp >= path && *tmp != '/'; tmp--);
+			if (!strncmp(++tmp, _fields[FIELD_FILES], strlen(_fields[FIELD_FILES])))
 			{
 				stbuf->st_mode = S_IFLNK | 0644;
 				stbuf->st_nlink = 1;
-
 			}
 			else
 			{
@@ -934,7 +913,7 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 		}
 	}
 	/* check the last metadata directory */
-	return ret;
+	return 0;
 }
 
 static int metadatafs_open(const char *path, struct fuse_file_info *fi)
