@@ -748,7 +748,7 @@ static int metadatafs_readlink(const char *path, char *buf, size_t size)
 	size_t len;
 
 	/* FIXME get the last entry on the path */
-	for (tmp = path + strlen(path); tmp != path; tmp--)
+	for (tmp = path + strlen(path); tmp >= path; tmp--)
 	{
 		if (*tmp == '/')
 		{
@@ -876,7 +876,7 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 		int i;
 
 		/* FIXME get the last entry on the path */
-		for (file = path + strlen(path); file != path; file--)
+		for (file = path + strlen(path); file >= path; file--)
 		{
 			if (*file == '/')
 			{
@@ -894,21 +894,46 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 				break;
 			}
 		}
-		/* if previous dir is Files then all the contents must be links */
 		if (!is_field)
 		{
-			char *tmp;
+			char *last_field;
 
-			for (tmp = file - 2; tmp >= path && *tmp != '/'; tmp--);
-			if (!strncmp(++tmp, _fields[FIELD_FILES], strlen(_fields[FIELD_FILES])))
+			for (last_field = file - 2; last_field >= path; last_field--)
 			{
-				stbuf->st_mode = S_IFLNK | 0644;
-				stbuf->st_nlink = 1;
+				if (*last_field == '/')
+				{
+					last_field++;
+					break;
+				}
 			}
-			else
+			for (i = 0; i < FIELDS; i++)
 			{
+				if (!strncmp(last_field, _fields[i], strlen(_fields[i])))
+					break;
+			}
+			switch (i)
+			{
+				/* if previous dir is Files then all the contents must be links */
+				case FIELD_FILES:
+				{
+					Mdfs_File *f;
+
+					f = mdfs_file_get_from_id(db, atoi(file));
+					if (!f) return -ENOENT;
+					mdfs_file_free(f);
+					stbuf->st_mode = S_IFLNK | 0644;
+					stbuf->st_nlink = 1;				
+				}
+				break;
+
+				case FIELDS:
+				return -ENOENT;
+				break;
+
+				default:
 				stbuf->st_mode = S_IFDIR | 0755;
 				stbuf->st_nlink = 2;
+				break;	
 			}
 		}
 	}
