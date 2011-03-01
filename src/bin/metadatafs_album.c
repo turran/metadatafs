@@ -35,6 +35,34 @@ static Mdfs_Album * mdfs_album_new_internal(unsigned int id, const char *name,
 /*============================================================================*
  *                                 Global                                     *
  *============================================================================*/
+Mdfs_Album * mdfs_album_get_from_name(sqlite3 *db, const char *name)
+{
+	Mdfs_Album *album;
+	char *str;
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+	int id;
+	unsigned int artist_id;
+
+	str = sqlite3_mprintf("SELECT id,artist FROM album WHERE name = '%q';",
+			name);
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
+	if (error != SQLITE_OK)
+		return NULL;
+	if (sqlite3_step(stmt) != SQLITE_ROW)
+		return NULL;
+	id = sqlite3_column_int(stmt, 0);
+	artist_id = sqlite3_column_int(stmt, 1);
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+
+	album = mdfs_album_new_internal(id, name, NULL);
+	return album; 
+}
+
+
 Mdfs_Album * mdfs_album_get(sqlite3 *db, const char *name, Mdfs_Artist *artist)
 {
 	Mdfs_Album *album;

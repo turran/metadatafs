@@ -44,7 +44,7 @@ Mdfs_File * mdfs_file_get_from_id(sqlite3 *db, unsigned int id)
 	sqlite3_stmt *stmt;
 	const char *tail;
 	int error;
-	const unsigned char *path;
+	char *path;
 	time_t mtime;
 	unsigned int title_id;
 
@@ -59,10 +59,12 @@ Mdfs_File * mdfs_file_get_from_id(sqlite3 *db, unsigned int id)
 	path = sqlite3_column_text(stmt, 0);
 	mtime = sqlite3_column_int(stmt, 1);
 	title_id = sqlite3_column_int(stmt, 2);
-	sqlite3_finalize(stmt);
 
 	//TODO title = mdfs_title_get_from_id(db, title_id);
-	return mdfs_file_new_internal(id, path, mtime, NULL);
+	file = mdfs_file_new_internal(id, path, mtime, NULL);
+	sqlite3_finalize(stmt);
+
+	return file;
 }
 
 Mdfs_File * mdfs_file_get(sqlite3 *db, const char *path, time_t mtime, Mdfs_Title *title)
@@ -106,7 +108,6 @@ Mdfs_File * mdfs_file_new(sqlite3 *db, const char *path, time_t mtime, Mdfs_Titl
 		return NULL;
 	sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
-	printf("file found %s %ld %d\n", path, mtime, title->id);
 
 	file = mdfs_file_get(db, path, mtime, title);
 	return file;
