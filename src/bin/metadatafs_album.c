@@ -20,7 +20,7 @@
  *                                  Local                                     *
  *============================================================================*/
 static Mdfs_Album * mdfs_album_new_internal(unsigned int id, const char *name,
-		Mdfs_Artist *artist)
+		unsigned int artist)
 {
 	Mdfs_Album *thiz;
 
@@ -35,6 +35,33 @@ static Mdfs_Album * mdfs_album_new_internal(unsigned int id, const char *name,
 /*============================================================================*
  *                                 Global                                     *
  *============================================================================*/
+Mdfs_Album * mdfs_album_get_from_id(sqlite3 *db, unsigned int id)
+{
+	Mdfs_Album *album;
+	char *str;
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+	unsigned int artist;
+	const unsigned char *name;
+
+	str = sqlite3_mprintf("SELECT name,artist FROM album WHERE id = %d;",
+			id);
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
+	if (error != SQLITE_OK)
+		return NULL;
+	if (sqlite3_step(stmt) != SQLITE_ROW)
+		return NULL;
+	name = sqlite3_column_text(stmt, 0);
+	artist = sqlite3_column_int(stmt, 1);
+
+	album = mdfs_album_new_internal(id, name, artist);
+	sqlite3_finalize(stmt);
+
+	return album; 
+}
+
 Mdfs_Album * mdfs_album_get_from_name(sqlite3 *db, const char *name)
 {
 	Mdfs_Album *album;
@@ -43,7 +70,7 @@ Mdfs_Album * mdfs_album_get_from_name(sqlite3 *db, const char *name)
 	const char *tail;
 	int error;
 	int id;
-	unsigned int artist_id;
+	unsigned int artist;
 
 	str = sqlite3_mprintf("SELECT id,artist FROM album WHERE name = '%q';",
 			name);
@@ -54,16 +81,16 @@ Mdfs_Album * mdfs_album_get_from_name(sqlite3 *db, const char *name)
 	if (sqlite3_step(stmt) != SQLITE_ROW)
 		return NULL;
 	id = sqlite3_column_int(stmt, 0);
-	artist_id = sqlite3_column_int(stmt, 1);
+	artist = sqlite3_column_int(stmt, 1);
 	sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 
-	album = mdfs_album_new_internal(id, name, NULL);
+	album = mdfs_album_new_internal(id, name, artist);
 	return album; 
 }
 
 
-Mdfs_Album * mdfs_album_get(sqlite3 *db, const char *name, Mdfs_Artist *artist)
+Mdfs_Album * mdfs_album_get(sqlite3 *db, const char *name, unsigned int artist)
 {
 	Mdfs_Album *album;
 	char *str;
@@ -73,7 +100,7 @@ Mdfs_Album * mdfs_album_get(sqlite3 *db, const char *name, Mdfs_Artist *artist)
 	int id;
 
 	str = sqlite3_mprintf("SELECT id FROM album WHERE name = '%q' AND artist = %d;",
-			name, artist->id);
+			name, artist);
 	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
 	sqlite3_free(str);
 	if (error != SQLITE_OK)
@@ -88,7 +115,7 @@ Mdfs_Album * mdfs_album_get(sqlite3 *db, const char *name, Mdfs_Artist *artist)
 	return album; 
 }
 
-Mdfs_Album * mdfs_album_new(sqlite3 *db, const char *name, Mdfs_Artist *artist)
+Mdfs_Album * mdfs_album_new(sqlite3 *db, const char *name, unsigned int artist)
 {
 	char *str;
 	sqlite3_stmt *stmt;
@@ -97,7 +124,7 @@ Mdfs_Album * mdfs_album_new(sqlite3 *db, const char *name, Mdfs_Artist *artist)
 	int id = -1;
 
 	str = sqlite3_mprintf("INSERT OR IGNORE INTO album (name, artist) VALUES ('%q',%d);",
-			name, artist->id);
+			name, artist);
 	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
 	sqlite3_free(str);
 	if (error != SQLITE_OK)

@@ -92,7 +92,7 @@ static int _path_to_query(char *path, metadatafs_query *q)
 	char *token;
 
 	memset(q, 0, sizeof(metadatafs_query));
-	q->last_is_field = -1;
+	q->last_is_field = 0;
 	token = strtok(path, "/");
         if (!token) return 1;
 
@@ -113,7 +113,7 @@ static int _path_to_query(char *path, metadatafs_query *q)
 				token = strtok(NULL, "/");
 				if (!token)
 				{
-					q->last_is_field = i;
+					q->last_is_field = 1;
 					return 1;
 				}
 				strncpy(q->entries[i], token, PATH_MAX);
@@ -133,7 +133,7 @@ static char * _query_to_string(metadatafs_query *q)
 	metadatafs_mask m;
 
 	str[0] = '\0';
-	if (q->last_is_field == FIELD_ARTIST)
+	if (q->last_field == FIELD_ARTIST)
 	{
 		sprintf(str, "SELECT DISTINCT %s.name FROM artist AS %s", _fields[FIELD_ARTIST], _fields[FIELD_ARTIST]);
 		if (q->fields & MASK_FILES)
@@ -149,7 +149,7 @@ static char * _query_to_string(metadatafs_query *q)
 			sprintf(str, "%s JOIN album WHERE album.artist = artist.id", str);
 		}
 	}
-	else if (q->last_is_field == FIELD_ALBUM)
+	else if (q->last_field == FIELD_ALBUM)
 	{
 		sprintf(str, "SELECT DISTINCT %s.name FROM album AS %s", _fields[FIELD_ALBUM], _fields[FIELD_ALBUM]);
 		if (q->fields & MASK_ARTIST)
@@ -176,7 +176,7 @@ static char * _query_to_string(metadatafs_query *q)
 			sprintf(str, "%s JOIN title WHERE title.album = album.id", str);
 		}
 	}
-	else if (q->last_is_field == FIELD_TITLE)
+	else if (q->last_field == FIELD_TITLE)
 	{
 		sprintf(str, "SELECT DISTINCT %s.name FROM title AS %s", _fields[FIELD_TITLE], _fields[FIELD_TITLE]);
 		if (q->fields & MASK_FILES)
@@ -203,7 +203,7 @@ static char * _query_to_string(metadatafs_query *q)
 			sprintf(str, "%s JOIN album,artist WHERE album.artist = artist.id AND title.album = album.id", str);
 		}
 	}
-	else if (q->last_is_field == FIELD_FILES)
+	else if (q->last_field == FIELD_FILES)
 	{
 		sprintf(str, "SELECT DISTINCT %s.id FROM files AS %s", _fields[FIELD_FILES], _fields[FIELD_FILES]);
 		if (q->fields & MASK_ARTIST)
@@ -219,7 +219,7 @@ static char * _query_to_string(metadatafs_query *q)
 			sprintf(str, "%s JOIN title WHERE files.title = title.id", str);
 		}
 	}
-	m = q->fields & ~(1 << q->last_is_field);
+	m = q->fields & ~(1 << q->last_field);
 	if (m)
 	{
 		int i;
@@ -247,6 +247,7 @@ static void _query_dump(metadatafs_query *q)
 	printf("album = %s\n", q->fields & MASK_ALBUM ? q->entries[FIELD_ALBUM] : "<none>");
 	printf("title = %s\n", q->fields & MASK_TITLE ? q->entries[FIELD_TITLE] : "<none>");
 	printf("file = %s\n", q->fields & MASK_FILES ? q->entries[FIELD_FILES] : "<none>");
+	printf("last_field = %d\n", q->last_field);
 	printf("last_is_field = %d\n", q->last_is_field);
 }
 
@@ -291,154 +292,6 @@ again:
 static void db_cleanup(void)
 {
 	sqlite3_close(db);
-}
-
-static int db_insert_artist(const char *artist)
-{
-	char *str;
-	sqlite3_stmt *stmt;
-	const char *tail;
-	int error;
-	int id = -1;
-
-	/* insert the new artist */
-	str = sqlite3_mprintf("INSERT OR IGNORE INTO artist (name) VALUES ('%q');",
-			artist);
-	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
-	sqlite3_free(str);
-	if (error != SQLITE_OK)
-	{
-		printf("error artist %s\n", artist);
-	}
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	/* get the id */
-	str = sqlite3_mprintf("SELECT id FROM artist WHERE name = '%q';",
-			artist);
-	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
-	sqlite3_free(str);
-	if (error != SQLITE_OK)
-	{
-		printf("error artist %s\n", artist);
-		return id;
-	}
-	if (sqlite3_step(stmt) != SQLITE_ROW)
-	{
-		printf("error querying artist\n");
-		return id;
-	}
-	id = sqlite3_column_int(stmt, 0);
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-
-	return id;
-}
-
-static int db_insert_album(const char *album, int aid)
-{
-	char *str;
-	sqlite3_stmt *stmt;
-	const char *tail;
-	int error;
-	int id = -1;
-
-	/* insert the new album in case it does not exist already */
-	str = sqlite3_mprintf("SELECT id FROM album WHERE name = '%q' AND artist = %d;",
-			album, aid);
-	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
-	sqlite3_free(str);
-	if (error != SQLITE_OK)
-	{
-		printf("error album %s\n", album);
-		return id;
-	}
-	if (sqlite3_step(stmt) != SQLITE_ROW)
-	{
-		sqlite3_finalize(stmt);
-		str = sqlite3_mprintf("INSERT OR IGNORE INTO album (name, artist) VALUES ('%q',%d);",
-				album, aid);
-		error = sqlite3_prepare(db, str, -1, &stmt, &tail);
-		sqlite3_free(str);
-		if (error != SQLITE_OK)
-		{
-			printf("error album %s\n", album);
-		}
-		sqlite3_step(stmt);
-		sqlite3_finalize(stmt);
-		str = sqlite3_mprintf("SELECT id FROM album WHERE name = '%q' AND artist = %d;",
-				album, aid);
-		error = sqlite3_prepare(db, str, -1, &stmt, &tail);
-		sqlite3_free(str);
-		if (error != SQLITE_OK)
-		{
-			printf("error album %s\n", album);
-			return id;
-		}
-		if (sqlite3_step(stmt) != SQLITE_ROW)
-		{
-			printf("error querying album %s %d\n", album, aid);
-			return id;
-		}
-	}
-	id = sqlite3_column_int(stmt, 0);
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-
-	return id;
-}
-
-static int db_insert_title(const char *title, int album)
-{
-	char *str;
-	sqlite3_stmt *stmt;
-	const char *tail;
-	int error;
-	int id = -1;
-
-	/* insert the new album in case it does not exist already */
-	str = sqlite3_mprintf("SELECT id FROM title WHERE name = '%q' AND album = %d;",
-			title, album);
-	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
-	sqlite3_free(str);
-	if (error != SQLITE_OK)
-	{
-		printf("1 error title %s\n", title);
-		return id;
-	}
-	if (sqlite3_step(stmt) != SQLITE_ROW)
-	{
-		sqlite3_finalize(stmt);
-		str = sqlite3_mprintf("INSERT OR IGNORE INTO title (name, album) VALUES ('%q',%d);",
-				title, album);
-		error = sqlite3_prepare(db, str, -1, &stmt, &tail);
-		sqlite3_free(str);
-		if (error != SQLITE_OK)
-		{
-			printf("2 error title %s\n", title);
-		}
-		sqlite3_step(stmt);
-		sqlite3_finalize(stmt);
-		str = sqlite3_mprintf("SELECT id FROM title WHERE name = '%q' AND album = %d;",
-				title, album);
-		error = sqlite3_prepare(db, str, -1, &stmt, &tail);
-		sqlite3_free(str);
-		if (error != SQLITE_OK)
-		{
-			printf("3 error title %s\n", title);
-			return id;
-		}
-		if (sqlite3_step(stmt) != SQLITE_ROW)
-		{
-			printf("error querying title %s %d\n", title, album);
-			return id;
-		}
-	}
-	id = sqlite3_column_int(stmt, 0);
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-
-	return id;
-
 }
 
 static int db_file_changed(const char *file, time_t mtime)
@@ -498,9 +351,6 @@ static void db_insert_file(const char *file, time_t mtime, int title)
 
 static int db_setup(void)
 {
-	sqlite3_stmt *stmt;
-	const char *tail;
-	int error;
 	/* we should generate the database here
 	 * in case it already exists, just
 	 * compare mtimes of files
@@ -510,60 +360,11 @@ static int db_setup(void)
 		printf("could not open the db\n");
 		return 0;
 	}
+	if (!mdfs_artist_init(db)) return 0;
+	if (!mdfs_album_init(db)) return 0;
+	if (!mdfs_title_init(db)) return 0;
+	if (!mdfs_file_init(db)) return 0;
 
-	error = sqlite3_prepare(db,
-			"CREATE TABLE IF NOT EXISTS "
-			"artist(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE);",
-			-1, &stmt, &tail);
-	if (error != SQLITE_OK)
-	{
-		printf("error artist\n");
-		return 0;
-	}
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-
-	/* TODO add a year */
-	error = sqlite3_prepare(db,
-			"CREATE TABLE IF NOT EXISTS "
-			"album(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, artist INTEGER, "
-			"FOREIGN KEY (artist) REFERENCES artist (id));",
-			-1, &stmt, &tail);
-	if (error != SQLITE_OK)
-	{
-		printf("error album\n");
-		return 0;
-	}
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-
-	/* TODO add the genre */
-	error = sqlite3_prepare(db,
-			"CREATE TABLE IF NOT EXISTS "
-			"title(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, album INTEGER, "
-			"FOREIGN KEY (album) REFERENCES album (id));",
-			-1, &stmt, &tail);
-	if (error != SQLITE_OK)
-	{
-		printf("error title\n");
-		return 0;
-	}
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-
-	error = sqlite3_prepare(db,
-			"CREATE TABLE IF NOT EXISTS "
-			"files(id INTEGER PRIMARY KEY AUTOINCREMENT, file TEXT, dbfile TEXT, "
-			"mtime INTEGER, title INTEGER, "
-			"FOREIGN KEY (title) REFERENCES title (id));",
-			-1, &stmt, &tail);
-	if (error != SQLITE_OK)
-	{
-		printf("error file\n");
-		return 0;
-	}
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
 
 	return 1;
 }
@@ -607,6 +408,10 @@ static void _scan(const char *path)
 		}
 		else if (S_ISREG(st.st_mode))
 		{
+			Mdfs_Artist *artist;
+			Mdfs_Title *title;
+			Mdfs_File *file;
+			Mdfs_Album *album;
 			int id;
 			char *str;
 			void *handle;
@@ -615,28 +420,34 @@ static void _scan(const char *path)
 			if (!db_file_changed(realfile, st.st_mtime))
 				continue;
 
+			/* FIXME move all of this into a function */
 			handle = libmetadatafs_open(realfile);
 			if (!handle) continue;
 
 			/* artist */
 			str = libmetadatafs_artist_get(handle);
-			id = db_insert_artist(str);
+			artist = mdfs_artist_new(db, str);
 			free(str);
-			if (id < 0) goto end;
+			if (!artist) goto end_artist;
 			/* album */
 			str = libmetadatafs_album_get(handle);
-			id = db_insert_album(str, id);
+			album = mdfs_album_new(db, str, artist->id);
 			free(str);
-			if (id < 0) goto end;
+			if (!album) goto end_album;
 			/* title */
 			str = libmetadatafs_title_get(handle);
-			id = db_insert_title(str, id);
+			title = mdfs_title_new(db, str, album->id);
 			free(str);
-			if (id < 0) goto end;
+			if (!title) goto end_title;
 
 			/* file */
-			db_insert_file(realfile, st.st_mtime, id);
-end:
+			file = mdfs_file_new(db, realfile, st.st_mtime, title->id);
+			mdfs_title_free(title);
+end_title:
+			mdfs_album_free(album);
+end_album:
+			mdfs_artist_free(artist);
+end_artist:
 			libmetadatafs_close(handle);
 		}
 	}
@@ -821,7 +632,7 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 	}
 	/* the last directory on the path is not a metadata field */
 	//printf("readdir %s %d %d\n", path, q.last_is_field, q.fields);
-	if (q.last_is_field < 0)
+	if (!q.last_is_field)
 	{
 		int i = 0;
 		metadatafs_mask f;
@@ -864,7 +675,7 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 			sqlite3_finalize(stmt);
 		}
 
-		if (q.last_is_field == FIELD_FILES)
+		if (q.last_field == FIELD_FILES)
 		{
 			do
 			{
@@ -925,7 +736,7 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 	}
 	/* now get the last valid field from the file */
 	file = _get_last_field(path, &field);
-	printf("field = %d file = %s\n", field, file);
+	//printf("field = %d file = %s\n", field, file);
 	/* set the default mode */
 	stbuf->st_mode = S_IFDIR | 0755;
 	stbuf->st_nlink = 2;
@@ -998,15 +809,145 @@ static int metadatafs_statfs(const char *path, struct statvfs *stbuf)
 	return 0;
 }
 
+#if 0
+static Mdfs_File * file_new(const char *filename)
+{
+	Mdfs_File *file;
+
+	void *handle;
+
+	/* FIXME move all of this into a function */
+	handle = libmetadatafs_open(filename);
+	if (!handle) continue;
+
+	/* artist */
+	str = libmetadatafs_artist_get(handle);
+	artist = mdfs_artist_new(db, str);
+	free(str);
+	if (!artist) goto end_artist;
+	/* album */
+	str = libmetadatafs_album_get(handle);
+	album = mdfs_album_new(db, str, artist->id);
+	free(str);
+	if (!album) goto end_album;
+	/* title */
+	str = libmetadatafs_title_get(handle);
+	title = mdfs_title_new(db, str, album->id);
+	free(str);
+	if (!title) goto end_title;
+
+	/* file */
+	file = mdfs_file_new(db, realfile, st.st_mtime, title->id);
+	mdfs_title_free(title);
+end_title:
+	mdfs_album_free(album);
+end_album:
+	mdfs_artist_free(artist);
+end_artist:
+	libmetadatafs_close(handle);
+
+}
+#endif
+
+/* the original file has changed on the filesystem, propragate the changes now */
+static void _file_update(const char *filename)
+{
+	Mdfs_File *file;
+	Mdfs_Artist *artist;
+	Mdfs_Title *atitle;
+	Mdfs_Album *album;
+	char *str;
+	void *handle;
+
+	printf("updating file %s\n", filename);
+	handle = libmetadatafs_open(filename);
+	if (!handle) return;
+
+	/* first fetch the old file from the database */
+	file = mdfs_file_get_from_path(db, filename);
+	atitle = mdfs_title_get_from_id(db, file->title);
+	album = mdfs_album_get_from_id(db, atitle->album);
+	artist = mdfs_artist_get_from_id(db, album->artist);
+
+	/* now fetch the new information */
+	/* artist */
+	str = libmetadatafs_artist_get(handle);
+	if (strcmp(artist->name, str))
+	{
+		Mdfs_Artist *nartist;
+
+		nartist = mdfs_artist_new(db, str);
+		mdfs_artist_free(nartist);
+	}
+	free(str);
+	/* album */
+	str = libmetadatafs_album_get(handle);
+	if (strcmp(album->name, str))
+	{
+
+	}
+	free(str);
+	/* title */
+	str = libmetadatafs_title_get(handle);
+	if (strcmp(atitle->name, str))
+	{
+
+	}
+	free(str);
+
+	libmetadatafs_close(handle);
+}
+
+static int _file_fields_update(Mdfs_File *file, metadatafs_mask mask, metadatafs_query *dst)
+{
+	void *handle;
+	int i;
+
+	handle = libmetadatafs_open(file->path);
+	if (!handle) return 0;
+	printf("updating file %s fields\n", file->path);
+	for (i = 0; i < FIELDS; i++)
+	{
+		if (mask & (1 << i))
+		{
+			switch (i)
+			{
+				case FIELD_ALBUM:
+				libmetadatafs_album_set(handle, dst->entries[FIELD_ALBUM]);
+				break;
+
+				case FIELD_ARTIST:
+				libmetadatafs_artist_set(handle, dst->entries[FIELD_ARTIST]);
+				break;
+
+				case FIELD_TITLE:
+				libmetadatafs_title_set(handle, dst->entries[FIELD_TITLE]);
+				break;
+
+				default:
+				break;
+			}
+		}
+	}
+	libmetadatafs_close(handle);
+//#if !HAVE_INOTIFY
+	_file_update(file->path);
+//#endif
+	return 1;
+}
+
 /**
  * Here we handle all the logic of the mv operation
  */
 int metadatafs_rename(const char *orig, const char *dest)
 {
+	Mdfs_File *fsrc, *fdst;
+	metadatafs_mask new_mask = 0;
 	metadatafs_query src;
 	metadatafs_query dst;
 	char *tmp;
 	int ret;
+	int i;
 
 	tmp = strdup(orig);
 	ret = _path_to_query(tmp, &src);
@@ -1020,19 +961,73 @@ int metadatafs_rename(const char *orig, const char *dest)
 	if (src.last_field != dst.last_field)
 		return -EINVAL;
 	/* we cannot move fields */
-	if (src.last_is_field >= 0)
+	if (src.last_is_field)
 		return -EINVAL;
 
 	/* we cannot change file ids */
 	if (src.last_field == FIELD_FILES &&
 			strcmp(src.entries[FIELD_FILES], dst.entries[FIELD_FILES]))
 		return -EINVAL;
-
+	/* check what metadata we should change */
+	for (i = 0; i < FIELDS; i++)
+	{
+		if ((src.fields & (1 << i)) && (dst.fields & (1 << i)) &&
+				strcmp(src.entries[i], dst.entries[i]))
+			new_mask |= (1 << i);
+		
+	}
 	/* now we can update the metadata */
-	printf("rename %s %s!!!\n", orig, dest);
 	_query_dump(&src);
 	_query_dump(&dst);
-	return -EACCES;
+
+	/* get the specific file */
+	if (src.last_field == FIELD_FILES)
+	{
+		Mdfs_File *file;
+		int id;
+
+		id = atoi(src.entries[FIELD_FILES]);
+		file = mdfs_file_get_from_id(db, id);
+		_file_fields_update(file, new_mask, &dst);
+		mdfs_file_free(file);
+	}
+	/* get all the files */
+	else
+	{
+		sqlite3_stmt *stmt;
+		const char *tail;
+		int error;
+		char *query;
+
+		/* add to the query the files so we can fetch all the files matching the src query */
+		src.last_field = FIELD_FILES;
+		src.last_is_field = 1;
+
+		query = _query_to_string(&src);
+		error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+		free(query);
+		if (error != SQLITE_OK)
+		{
+			return -ENOENT;
+		}
+		if (sqlite3_step(stmt) != SQLITE_ROW)
+		{
+			return -ENOENT;
+			sqlite3_finalize(stmt);
+		}
+		do
+		{
+				Mdfs_File *file;
+				int id;
+
+				id = sqlite3_column_int(stmt, 0);
+				file = mdfs_file_get_from_id(db, id);
+				_file_fields_update(file, new_mask, &dst);
+				mdfs_file_free(file);
+		} while (sqlite3_step(stmt) == SQLITE_ROW);
+		sqlite3_finalize(stmt);
+	}
+	return 0;
 }
 
 static void * metadatafs_init(struct fuse_conn_info *conn)
