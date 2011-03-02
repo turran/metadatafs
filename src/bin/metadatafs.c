@@ -81,6 +81,7 @@ typedef struct _metadatafs_query
 	char entries[FIELDS][PATH_MAX];
 	metadatafs_mask fields;
 	int last_field;
+	int last_is_field;
 } metadatafs_query;
 
 /******************************************************************************
@@ -91,7 +92,7 @@ static int _path_to_query(char *path, metadatafs_query *q)
 	char *token;
 
 	memset(q, 0, sizeof(metadatafs_query));
-	q->last_field = -1;
+	q->last_is_field = -1;
 	token = strtok(path, "/");
         if (!token) return 1;
 
@@ -106,13 +107,13 @@ static int _path_to_query(char *path, metadatafs_query *q)
 			{
 				is_field = 1;
 				/* mark the last field */
+				q->last_field = i;
 				q->fields |= (1 << i);
 				/* get next token for the value */
 				token = strtok(NULL, "/");
 				if (!token)
 				{
-					q->last_field = i;
-					printf("last field\n");
+					q->last_is_field = i;
 					return 1;
 				}
 				strncpy(q->entries[i], token, PATH_MAX);
@@ -132,7 +133,7 @@ static char * _query_to_string(metadatafs_query *q)
 	metadatafs_mask m;
 
 	str[0] = '\0';
-	if (q->last_field == FIELD_ARTIST)
+	if (q->last_is_field == FIELD_ARTIST)
 	{
 		sprintf(str, "SELECT DISTINCT %s.name FROM artist AS %s", _fields[FIELD_ARTIST], _fields[FIELD_ARTIST]);
 		if (q->fields & MASK_FILES)
@@ -148,7 +149,7 @@ static char * _query_to_string(metadatafs_query *q)
 			sprintf(str, "%s JOIN album WHERE album.artist = artist.id", str);
 		}
 	}
-	else if (q->last_field == FIELD_ALBUM)
+	else if (q->last_is_field == FIELD_ALBUM)
 	{
 		sprintf(str, "SELECT DISTINCT %s.name FROM album AS %s", _fields[FIELD_ALBUM], _fields[FIELD_ALBUM]);
 		if (q->fields & MASK_ARTIST)
@@ -175,7 +176,7 @@ static char * _query_to_string(metadatafs_query *q)
 			sprintf(str, "%s JOIN title WHERE title.album = album.id", str);
 		}
 	}
-	else if (q->last_field == FIELD_TITLE)
+	else if (q->last_is_field == FIELD_TITLE)
 	{
 		sprintf(str, "SELECT DISTINCT %s.name FROM title AS %s", _fields[FIELD_TITLE], _fields[FIELD_TITLE]);
 		if (q->fields & MASK_FILES)
@@ -202,7 +203,7 @@ static char * _query_to_string(metadatafs_query *q)
 			sprintf(str, "%s JOIN album,artist WHERE album.artist = artist.id AND title.album = album.id", str);
 		}
 	}
-	else if (q->last_field == FIELD_FILES)
+	else if (q->last_is_field == FIELD_FILES)
 	{
 		sprintf(str, "SELECT DISTINCT %s.id FROM files AS %s", _fields[FIELD_FILES], _fields[FIELD_FILES]);
 		if (q->fields & MASK_ARTIST)
@@ -218,7 +219,7 @@ static char * _query_to_string(metadatafs_query *q)
 			sprintf(str, "%s JOIN title WHERE files.title = title.id", str);
 		}
 	}
-	m = q->fields & ~(1 << q->last_field);
+	m = q->fields & ~(1 << q->last_is_field);
 	if (m)
 	{
 		int i;
@@ -246,6 +247,7 @@ static void _query_dump(metadatafs_query *q)
 	printf("album = %s\n", q->fields & MASK_ALBUM ? q->entries[FIELD_ALBUM] : "<none>");
 	printf("title = %s\n", q->fields & MASK_TITLE ? q->entries[FIELD_TITLE] : "<none>");
 	printf("file = %s\n", q->fields & MASK_FILES ? q->entries[FIELD_FILES] : "<none>");
+	printf("last_is_field = %d\n", q->last_is_field);
 }
 
 static inline char * _get_last_delim(const char *start, const char *end, char delim)
@@ -818,8 +820,8 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 		return -ENOENT;
 	}
 	/* the last directory on the path is not a metadata field */
-	//printf("readdir %s %d %d\n", path, q.last_field, q.fields);
-	if (q.last_field < 0)
+	//printf("readdir %s %d %d\n", path, q.last_is_field, q.fields);
+	if (q.last_is_field < 0)
 	{
 		int i = 0;
 		metadatafs_mask f;
@@ -862,7 +864,7 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 			sqlite3_finalize(stmt);
 		}
 
-		if (q.last_field == FIELD_FILES)
+		if (q.last_is_field == FIELD_FILES)
 		{
 			do
 			{
@@ -1014,6 +1016,19 @@ int metadatafs_rename(const char *orig, const char *dest)
 	ret = _path_to_query(tmp, &dst);
 	free(tmp);
 
+	/* the last field on the path should be the same */
+	if (src.last_field != dst.last_field)
+		return -EINVAL;
+	/* we cannot move fields */
+	if (src.last_is_field >= 0)
+		return -EINVAL;
+
+	/* we cannot change file ids */
+	if (src.last_field == FIELD_FILES &&
+			strcmp(src.entries[FIELD_FILES], dst.entries[FIELD_FILES]))
+		return -EINVAL;
+
+	/* now we can update the metadata */
 	printf("rename %s %s!!!\n", orig, dest);
 	_query_dump(&src);
 	_query_dump(&dst);
