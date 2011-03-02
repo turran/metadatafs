@@ -68,3 +68,20 @@ char * libmetadatafs_title_get(void *handle)
 {
 	return _backend->title_get(handle);
 }
+
+void libmetadatafs_artist_set(void *handle, char *artist)
+{
+	return _backend->artist_set(handle, artist);
+}
+
+void libmetadatafs_album_set(void *handle, char *album)
+{
+	return _backend->album_set(handle, album);
+
+}
+
+void libmetadatafs_title_set(void *handle, char *title)
+{
+	return _backend->title_set(handle, title);
+}
+

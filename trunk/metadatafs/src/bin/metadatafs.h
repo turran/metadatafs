@@ -42,14 +42,14 @@ struct _Mdfs_Album
 {
 	unsigned int id;
 	char *name;
-	Mdfs_Artist *artist;
+	unsigned int artist;
 };
 
 struct _Mdfs_Title
 {
 	unsigned int id;
 	char *name;
-	Mdfs_Album *album;
+	unsigned int album;
 };
 
 struct _Mdfs_File
@@ -57,7 +57,37 @@ struct _Mdfs_File
 	unsigned int id;
 	char *path;
 	time_t mtime;
-	Mdfs_Title *title;
+	unsigned int title;
 };
+
+/* album model */
+Mdfs_Album * mdfs_album_get_from_id(sqlite3 *db, unsigned int id);
+Mdfs_Album * mdfs_album_get_from_name(sqlite3 *db, const char *name);
+Mdfs_Album * mdfs_album_get(sqlite3 *db, const char *name, unsigned int artist);
+Mdfs_Album * mdfs_album_new(sqlite3 *db, const char *name, unsigned int artist);
+void mdfs_album_free(Mdfs_Album *album);
+int mdfs_album_init(sqlite3 *db);
+
+/* title model */
+Mdfs_Title * mdfs_title_get_from_id(sqlite3 *db, unsigned int id);
+Mdfs_Title * mdfs_title_get_from_name(sqlite3 *db, const char *name);
+Mdfs_Title * mdfs_title_get(sqlite3 *db, const char *name, unsigned int album);
+Mdfs_Title * mdfs_title_new(sqlite3 *db, const char *name, unsigned int album);
+void mdfs_title_free(Mdfs_Title *title);
+int mdfs_title_init(sqlite3 *db);
+
+/* file model */
+Mdfs_File * mdfs_file_get_from_id(sqlite3 *db, unsigned int id);
+Mdfs_File * mdfs_file_get(sqlite3 *db, const char *path, time_t mtime, unsigned int title);
+Mdfs_File * mdfs_file_new(sqlite3 *db, const char *path, time_t mtime, unsigned int title);
+void mdfs_file_free(Mdfs_File *file);
+int mdfs_file_init(sqlite3 *db);
+
+/* artist model */
+Mdfs_Artist * mdfs_artist_get_from_id(sqlite3 *db, unsigned int id);
+Mdfs_Artist * mdfs_artist_get(sqlite3 *db, const char *name);
+Mdfs_Artist * mdfs_artist_new(sqlite3 *db, const char *name);
+void mdfs_artist_free(Mdfs_Artist *artist);
+int mdfs_artist_init(sqlite3 *db);
 
 #endif

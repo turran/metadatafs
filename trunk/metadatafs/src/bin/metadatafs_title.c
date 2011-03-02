@@ -20,7 +20,7 @@
  *                                  Local                                     *
  *============================================================================*/
 static Mdfs_Title * mdfs_title_new_internal(unsigned int id, const char *name,
-		Mdfs_Album *album)
+		unsigned int album)
 {
 	Mdfs_Title *thiz;
 
@@ -35,6 +35,33 @@ static Mdfs_Title * mdfs_title_new_internal(unsigned int id, const char *name,
 /*============================================================================*
  *                                 Global                                     *
  *============================================================================*/
+Mdfs_Title * mdfs_title_get_from_id(sqlite3 *db, unsigned int id)
+{
+	Mdfs_Title *title;
+	char *str;
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+	const unsigned char *name;
+	unsigned int album;
+
+	str = sqlite3_mprintf("SELECT name,album FROM title WHERE id = %d",
+			id);
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
+	if (error != SQLITE_OK)
+		return NULL;
+	if (sqlite3_step(stmt) != SQLITE_ROW)
+		return NULL;
+	name = sqlite3_column_text(stmt, 0);
+	album = sqlite3_column_int(stmt, 1);
+
+	title = mdfs_title_new_internal(id, name, album);
+	sqlite3_finalize(stmt);
+
+	return title;
+}
+
 Mdfs_Title * mdfs_title_get_from_name(sqlite3 *db, const char *name)
 {
 	Mdfs_Title *title;
@@ -43,7 +70,7 @@ Mdfs_Title * mdfs_title_get_from_name(sqlite3 *db, const char *name)
 	const char *tail;
 	int error;
 	int id;
-	unsigned int album_id;
+	unsigned int album;
 
 	str = sqlite3_mprintf("SELECT id,album FROM title WHERE name = '%q'",
 			name);
@@ -54,15 +81,15 @@ Mdfs_Title * mdfs_title_get_from_name(sqlite3 *db, const char *name)
 	if (sqlite3_step(stmt) != SQLITE_ROW)
 		return NULL;
 	id = sqlite3_column_int(stmt, 0);
-	album_id = sqlite3_column_int(stmt, 1);
-	sqlite3_step(stmt);
+	album = sqlite3_column_int(stmt, 1);
 	sqlite3_finalize(stmt);
 
-	title = mdfs_title_new_internal(id, name, NULL);
+	title = mdfs_title_new_internal(id, name, album);
+
 	return title;
 }
 
-Mdfs_Title * mdfs_title_get(sqlite3 *db, const char *name, Mdfs_Album *album)
+Mdfs_Title * mdfs_title_get(sqlite3 *db, const char *name, unsigned int album)
 {
 	Mdfs_Title *title;
 	char *str;
@@ -72,7 +99,7 @@ Mdfs_Title * mdfs_title_get(sqlite3 *db, const char *name, Mdfs_Album *album)
 	int id;
 
 	str = sqlite3_mprintf("SELECT id FROM title WHERE name = '%q' AND album = %d;",
-			name, album->id);
+			name, album);
 	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
 	sqlite3_free(str);
 	if (error != SQLITE_OK)
@@ -80,14 +107,14 @@ Mdfs_Title * mdfs_title_get(sqlite3 *db, const char *name, Mdfs_Album *album)
 	if (sqlite3_step(stmt) != SQLITE_ROW)
 		return NULL;
 	id = sqlite3_column_int(stmt, 0);
-	sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 
 	title = mdfs_title_new_internal(id, name, album);
+
 	return title;
 }
 
-Mdfs_Title * mdfs_title_new(sqlite3 *db, const char *name, Mdfs_Album *album)
+Mdfs_Title * mdfs_title_new(sqlite3 *db, const char *name, unsigned int album)
 {
 	char *str;
 	sqlite3_stmt *stmt;
@@ -111,8 +138,6 @@ Mdfs_Title * mdfs_title_new(sqlite3 *db, const char *name, Mdfs_Album *album)
 void mdfs_title_free(Mdfs_Title *title)
 {
 	free(title->name);
-	if (title->album)
-		mdfs_album_free(title->album);
 	free(title);
 }
 
@@ -122,6 +147,7 @@ int mdfs_title_init(sqlite3 *db)
 	const char *tail;
 	int error;
 
+	/* TODO add the genre */
 	error = sqlite3_prepare(db,
 			"CREATE TABLE IF NOT EXISTS "
 			"title(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, album INTEGER, "

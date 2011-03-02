@@ -9,9 +9,61 @@
  *============================================================================*/
 static const char *unknown = "Unknown";
 
-static void _tag_set_data(struct id3_tag *tag, const char *name, const char *data)
+static void _tag_set_text(struct id3_tag *tag, const char *name, const char *text)
 {
+	struct id3_frame *frame;
+	union id3_field *field;
+	enum id3_field_textencoding enc;
+	char *title = NULL;
 
+	printf("setting text %s\n", text);
+	frame = id3_tag_findframe(tag, name, 0);
+	if (!frame)
+	{
+		frame = id3_frame_new(name);
+		printf("creating new frame\n");
+		//id3_tag_attachframe(tag, frame);
+	}
+
+	field = id3_frame_field(frame, 0);
+	if (!field)
+	{
+		printf("no field 1\n");
+		goto end;
+	}
+	enc = id3_field_gettextencoding(field);
+
+	field = id3_frame_field(frame, 1);
+	if (!field)
+	{
+		printf("no field 2\n");
+		goto end;
+	}
+
+	if (enc != ID3_FIELD_TEXTENCODING_ISO_8859_1 && enc != ID3_FIELD_TEXTENCODING_UTF_8)
+		goto end;
+
+	switch (id3_field_type(field))
+	{
+		case ID3_FIELD_TYPE_STRING:
+		id3_field_setstring(field, id3_utf8_ucs4duplicate(text));
+		break;
+
+		case ID3_FIELD_TYPE_STRINGFULL:
+		id3_field_setfullstring(field, id3_utf8_ucs4duplicate(text));
+		break;
+
+		case ID3_FIELD_TYPE_STRINGLIST:
+		{
+			id3_ucs4_t *str;
+
+			str = id3_utf8_ucs4duplicate(text);
+			id3_field_setstrings(field, 1, &str);
+		}
+		break;
+	}
+end:
+	return;
 }
 
 /* TODO rename this to set data */
@@ -93,7 +145,7 @@ static int _supported(char *file)
 static void * _open(char *file)
 {
 	struct id3_file *id3;
-	id3 = id3_file_open(file, ID3_FILE_MODE_READONLY);
+	id3 = id3_file_open(file, ID3_FILE_MODE_READWRITE);
 
 	return id3;
 }
@@ -131,6 +183,37 @@ static char * _album_get(void *handle)
 	tag = id3_file_tag(id3);
 	return _tag_get_text(tag, ID3_FRAME_ALBUM);
 }
+
+static void _artist_set(void *handle, char *artist)
+{
+	struct id3_file *id3 = handle;
+	struct id3_tag *tag;
+
+	tag = id3_file_tag(id3);
+	_tag_set_text(tag, ID3_FRAME_ARTIST, artist);
+	id3_file_update(id3);
+}
+
+static void _title_set(void *handle, char *title)
+{
+	struct id3_file *id3 = handle;
+	struct id3_tag *tag;
+
+	tag = id3_file_tag(id3);
+	_tag_set_text(tag, ID3_FRAME_TITLE, title);
+	id3_file_update(id3);
+}
+
+static void _album_set(void *handle, char *album)
+{
+	struct id3_file *id3 = handle;
+	struct id3_tag *tag;
+	int ret;
+
+	tag = id3_file_tag(id3);
+	_tag_set_text(tag, ID3_FRAME_ALBUM, album);
+	id3_file_update(id3);
+}
 /*============================================================================*
  *                                 Global                                     *
  *============================================================================*/
@@ -141,4 +224,7 @@ libmetadatafs_backend libid3tag_backend = {
 	.artist_get = _artist_get,
 	.album_get = _album_get,
 	.title_get = _title_get,
+	.artist_set = _artist_set,
+	.album_set = _album_set,
+	.title_set = _title_set,
 };

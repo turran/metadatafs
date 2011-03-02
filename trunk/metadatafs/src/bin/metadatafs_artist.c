@@ -51,10 +51,34 @@ Mdfs_Artist * mdfs_artist_get(sqlite3 *db, const char *name)
 	if (sqlite3_step(stmt) != SQLITE_ROW)
 		return NULL;
 	id = sqlite3_column_int(stmt, 0);
-	sqlite3_step(stmt);
 	sqlite3_finalize(stmt);
 
 	artist = mdfs_artist_new_internal(id, name);
+	return artist;
+}
+
+Mdfs_Artist * mdfs_artist_get_from_id(sqlite3 *db, unsigned int id)
+{
+	Mdfs_Artist *artist;
+	char *str;
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+	const unsigned char *name;
+
+	str = sqlite3_mprintf("SELECT name FROM artist WHERE id = %d",
+			id);
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
+	if (error != SQLITE_OK)
+		return NULL;
+	if (sqlite3_step(stmt) != SQLITE_ROW)
+		return NULL;
+	name = sqlite3_column_text(stmt, 0);
+
+	artist = mdfs_artist_new_internal(id, name);
+	sqlite3_finalize(stmt);
+
 	return artist;
 }
 

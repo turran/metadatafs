@@ -20,7 +20,7 @@
  *                                  Local                                     *
  *============================================================================*/
 static Mdfs_File * mdfs_file_new_internal(unsigned int id, const char *path,
-		time_t mtime, Mdfs_Title *title)
+		time_t mtime, unsigned int title)
 {
 	Mdfs_File *thiz;
 
@@ -39,14 +39,13 @@ static Mdfs_File * mdfs_file_new_internal(unsigned int id, const char *path,
 Mdfs_File * mdfs_file_get_from_id(sqlite3 *db, unsigned int id)
 {
 	Mdfs_File *file;
-	Mdfs_Title *title;
 	char *str;
 	sqlite3_stmt *stmt;
 	const char *tail;
 	int error;
-	char *path;
+	const unsigned char *path;
 	time_t mtime;
-	unsigned int title_id;
+	unsigned int title;
 
 	str = sqlite3_mprintf("SELECT file, mtime, title FROM files WHERE id = %d", id);
 	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
@@ -58,16 +57,43 @@ Mdfs_File * mdfs_file_get_from_id(sqlite3 *db, unsigned int id)
 
 	path = sqlite3_column_text(stmt, 0);
 	mtime = sqlite3_column_int(stmt, 1);
-	title_id = sqlite3_column_int(stmt, 2);
+	title = sqlite3_column_int(stmt, 2);
 
-	//TODO title = mdfs_title_get_from_id(db, title_id);
-	file = mdfs_file_new_internal(id, path, mtime, NULL);
+	file = mdfs_file_new_internal(id, path, mtime, title);
 	sqlite3_finalize(stmt);
 
 	return file;
 }
 
-Mdfs_File * mdfs_file_get(sqlite3 *db, const char *path, time_t mtime, Mdfs_Title *title)
+Mdfs_File * mdfs_file_get_from_path(sqlite3 *db, const char *path)
+{
+	Mdfs_File *file;
+	char *str;
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+	int id;
+	time_t mtime;
+	unsigned int title;
+
+	str = sqlite3_mprintf("SELECT id,mtime,title FROM files WHERE file = '%q';",
+			path);
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
+	if (error != SQLITE_OK)
+		return NULL;
+	if (sqlite3_step(stmt) != SQLITE_ROW)
+		return NULL;
+	id = sqlite3_column_int(stmt, 0);
+	mtime = sqlite3_column_int(stmt, 1);
+	title = sqlite3_column_int(stmt, 2);
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+
+	return mdfs_file_new_internal(id, path, mtime, title);
+}
+
+Mdfs_File * mdfs_file_get(sqlite3 *db, const char *path, time_t mtime, unsigned int title)
 {
 	Mdfs_File *file;
 	char *str;
@@ -77,7 +103,7 @@ Mdfs_File * mdfs_file_get(sqlite3 *db, const char *path, time_t mtime, Mdfs_Titl
 	int id;
 
 	str = sqlite3_mprintf("SELECT id FROM file WHERE file = '%q' AND mtime = %d AND title = %d;",
-			path, mtime, title->id);
+			path, mtime, title);
 	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
 	sqlite3_free(str);
 	if (error != SQLITE_OK)
@@ -91,7 +117,7 @@ Mdfs_File * mdfs_file_get(sqlite3 *db, const char *path, time_t mtime, Mdfs_Titl
 	return mdfs_file_new_internal(id, path, mtime, title);
 }
 
-Mdfs_File * mdfs_file_new(sqlite3 *db, const char *path, time_t mtime, Mdfs_Title *title)
+Mdfs_File * mdfs_file_new(sqlite3 *db, const char *path, time_t mtime, unsigned int title)
 {
 	Mdfs_File *file;
 	char *str;
@@ -101,7 +127,7 @@ Mdfs_File * mdfs_file_new(sqlite3 *db, const char *path, time_t mtime, Mdfs_Titl
 	int id;
 
 	str = sqlite3_mprintf("INSERT OR IGNORE INTO files (file, mtime, title) VALUES ('%q',%d,%d);",
-			path, mtime, title->id);
+			path, mtime, title);
 	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
 	sqlite3_free(str);
 	if (error != SQLITE_OK)
@@ -117,4 +143,27 @@ void mdfs_file_free(Mdfs_File *file)
 {
 	free(file->path);
 	free(file);
+}
+
+int mdfs_file_init(sqlite3 *db)
+{
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+
+	error = sqlite3_prepare(db,
+			"CREATE TABLE IF NOT EXISTS "
+			"files(id INTEGER PRIMARY KEY AUTOINCREMENT, file TEXT, dbfile TEXT, "
+			"mtime INTEGER, title INTEGER, "
+			"FOREIGN KEY (title) REFERENCES title (id));",
+			-1, &stmt, &tail);
+	if (error != SQLITE_OK)
+	{
+		printf("error file\n");
+		return 0;
+	}
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+
+	return 1;
 }
