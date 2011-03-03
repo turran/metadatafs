@@ -512,8 +512,8 @@ static void * _monitor(void *data)
 			struct inotify_event *event;
 
 		        event = (struct inotify_event *) &buf[i];
-			printf("wd=%d mask=%u cookie=%u len=%u\n",
-        	        	event->wd, event->mask,
+			printf("wd=%d mask=%u (%d %d %d) cookie=%u len=%u\n",
+        	        	event->wd, event->mask, IN_MODIFY, IN_CREATE, IN_DELETE,
 	                	event->cookie, event->len);
 
         		if (event->len)
@@ -809,91 +809,60 @@ static int metadatafs_statfs(const char *path, struct statvfs *stbuf)
 	return 0;
 }
 
-#if 0
-static Mdfs_File * file_new(const char *filename)
-{
-	Mdfs_File *file;
-
-	void *handle;
-
-	/* FIXME move all of this into a function */
-	handle = libmetadatafs_open(filename);
-	if (!handle) continue;
-
-	/* artist */
-	str = libmetadatafs_artist_get(handle);
-	artist = mdfs_artist_new(db, str);
-	free(str);
-	if (!artist) goto end_artist;
-	/* album */
-	str = libmetadatafs_album_get(handle);
-	album = mdfs_album_new(db, str, artist->id);
-	free(str);
-	if (!album) goto end_album;
-	/* title */
-	str = libmetadatafs_title_get(handle);
-	title = mdfs_title_new(db, str, album->id);
-	free(str);
-	if (!title) goto end_title;
-
-	/* file */
-	file = mdfs_file_new(db, realfile, st.st_mtime, title->id);
-	mdfs_title_free(title);
-end_title:
-	mdfs_album_free(album);
-end_album:
-	mdfs_artist_free(artist);
-end_artist:
-	libmetadatafs_close(handle);
-
-}
-#endif
-
 /* the original file has changed on the filesystem, propragate the changes now */
 static void _file_update(const char *filename)
 {
 	Mdfs_File *file;
 	Mdfs_Artist *artist;
-	Mdfs_Title *atitle;
+	Mdfs_Title *title;
 	Mdfs_Album *album;
 	char *str;
 	void *handle;
+	struct stat st;
+	int artist_changed = 0;
+	int album_changed = 0;
 
-	printf("updating file %s\n", filename);
 	handle = libmetadatafs_open(filename);
 	if (!handle) return;
 
 	/* first fetch the old file from the database */
 	file = mdfs_file_get_from_path(db, filename);
-	atitle = mdfs_title_get_from_id(db, file->title);
-	album = mdfs_album_get_from_id(db, atitle->album);
+	title = mdfs_title_get_from_id(db, file->title);
+	album = mdfs_album_get_from_id(db, title->album);
 	artist = mdfs_artist_get_from_id(db, album->artist);
 
-	/* now fetch the new information */
-	/* artist */
+	/* update the artist information */
 	str = libmetadatafs_artist_get(handle);
 	if (strcmp(artist->name, str))
 	{
-		Mdfs_Artist *nartist;
-
-		nartist = mdfs_artist_new(db, str);
-		mdfs_artist_free(nartist);
+		mdfs_artist_free(artist);
+		artist = mdfs_artist_new(db, str);
+		artist_changed = 1;
+		/* TODO in case there is no more albums with this artist, remove it */
 	}
 	free(str);
-	/* album */
+	/* update the album information */
 	str = libmetadatafs_album_get(handle);
-	if (strcmp(album->name, str))
+	if (strcmp(album->name, str) || artist_changed)
 	{
-
+		mdfs_album_free(album);
+		album = mdfs_album_new(db, str, artist->id);
+		album_changed = 1;
 	}
 	free(str);
-	/* title */
+	/* update the title information */
 	str = libmetadatafs_title_get(handle);
-	if (strcmp(atitle->name, str))
+	if (strcmp(title->name, str) || album_changed)
 	{
-
+		mdfs_title_free(title);
+		title = mdfs_title_new(db, str, album->id);
 	}
 	free(str);
+
+	/* update the file information */
+	if (stat(filename, &st) < 0)
+		return;
+	mdfs_file_update(file, db, filename, st.st_mtime, title->id);
 
 	libmetadatafs_close(handle);
 }
@@ -905,7 +874,6 @@ static int _file_fields_update(Mdfs_File *file, metadatafs_mask mask, metadatafs
 
 	handle = libmetadatafs_open(file->path);
 	if (!handle) return 0;
-	printf("updating file %s fields\n", file->path);
 	for (i = 0; i < FIELDS; i++)
 	{
 		if (mask & (1 << i))

@@ -145,6 +145,31 @@ void mdfs_file_free(Mdfs_File *file)
 	free(file);
 }
 
+void mdfs_file_update(Mdfs_File *file, sqlite3 *db, const char *path, time_t mtime, unsigned int title)
+{
+	char *str;
+	sqlite3_stmt *stmt;
+	const char *tail;
+	int error;
+	int id;
+
+	str = sqlite3_mprintf("UPDATE files SET file='%q', mtime=%d, title=%d WHERE id = %d",
+			path, mtime, title, file->id);
+	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
+	sqlite3_free(str);
+	if (error != SQLITE_OK)
+		return NULL;
+	sqlite3_step(stmt);
+	sqlite3_finalize(stmt);
+	if (strcmp(file->path, path))
+	{
+		free(file->path);
+		file->path = strdup(path);
+	}
+	file->mtime = mtime;
+	file->title = title;
+}
+
 int mdfs_file_init(sqlite3 *db)
 {
 	sqlite3_stmt *stmt;
