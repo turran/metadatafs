@@ -1,24 +1,21 @@
 #include "metadatafs.h"
 #include "libmetadatafs.h"
 
-#define BLOCK
-
 /*
  * TODO
+ * - Add support for covert art, whenever we are on an album directory we can
+ *   show a file named ID_front.jpg and ID_back.jpg that whenever it is read
+ *   it should fetch the image from the net if the file does not have it. if
+ *   the music file has the image already, when the file is read just read
+ *   such metadata.
+ * - We can do something similar with the lyrics of a file
  * - whenever a query fails with no results with should go back on the query and go
  * deleting entries on the database whenever the mtime of a file has changed, get
  * the id3 and store again the info
- * - on mkdir() under a tag, create such entry on the database
  * - on rmdir() under a tag, delete such entry on the database
- * - whenever a file is moved into another directory, update the metadata of the
- * file
  * - add a header file
  * - move the libid3tag into a backend
  *
- * - artist
- * -- album
- * --- title
- * ---- file
  *
  */
 /*============================================================================*
