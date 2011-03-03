@@ -904,6 +904,66 @@ static int _file_fields_update(Mdfs_File *file, metadatafs_mask mask, metadatafs
 	return 1;
 }
 
+int metadatafs_mkdir(const char *name, mode_t mode)
+{
+	metadatafs_query query;
+	char *tmp;
+	int ret;
+
+	tmp = strdup(name);
+	ret = _path_to_query(tmp, &query);
+	free(tmp);
+
+	if (!ret) return -EINVAL;
+
+	/* we only allow creating directories for categories */
+	if (query.last_is_field) return -EINVAL;
+
+	switch (query.last_field)
+	{
+		case FIELD_ARTIST:
+		{
+			Mdfs_Artist *artist;
+
+			artist = mdfs_artist_new(db, query.entries[FIELD_ARTIST]);
+			mdfs_artist_free(artist);
+		}
+		break;
+
+		case FIELD_ALBUM:
+		{
+			Mdfs_Album *album;
+			Mdfs_Artist *artist;
+
+			if (!(query.fields & MASK_ARTIST)) return -EINVAL;
+			artist = mdfs_artist_get(db, query.entries[FIELD_ARTIST]);
+			if (!artist) return -EINVAL;
+			album = mdfs_album_new(db, query.entries[FIELD_ALBUM], artist->id);
+			mdfs_artist_free(artist);
+			mdfs_album_free(album);
+		}
+		break;
+
+		case FIELD_TITLE:
+		{
+			Mdfs_Album *album;
+			Mdfs_Title *title;
+
+			if (!(query.fields & MASK_ALBUM)) return -EINVAL;
+			album = mdfs_album_get_from_name(db, query.entries[FIELD_ALBUM]);
+			if (!album) return -EINVAL;
+			title = mdfs_title_new(db, query.entries[FIELD_TITLE], album->id);
+			mdfs_album_free(album);
+			mdfs_title_free(title);
+		}
+		break;
+
+		default:
+		return -EINVAL;
+	}
+	return 0;
+}
+
 /**
  * Here we handle all the logic of the mv operation
  */
@@ -942,7 +1002,6 @@ int metadatafs_rename(const char *orig, const char *dest)
 		if ((src.fields & (1 << i)) && (dst.fields & (1 << i)) &&
 				strcmp(src.entries[i], dst.entries[i]))
 			new_mask |= (1 << i);
-		
 	}
 	/* now we can update the metadata */
 	_query_dump(&src);
@@ -1026,6 +1085,7 @@ static struct fuse_operations metadatafs_ops = {
 	.open     = metadatafs_open,
 	.read     = metadatafs_read,
 	.statfs   = metadatafs_statfs,
+	.mkdir    = metadatafs_mkdir,
 	.rename   = metadatafs_rename,
 	.init     = metadatafs_init,
 };
