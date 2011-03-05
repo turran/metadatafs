@@ -32,7 +32,7 @@ function normalize()
 			if [ $a == $b ]; then
 				continue
 			fi
-			if echo $a | grep -i "^${b}$" > /dev/null ; then
+			if echo $a | grep -i "^ *${b} *$" > /dev/null ; then
 				let "dups_count=$dups_count+1"
 				dups[$dups_count]=$b
 			fi
@@ -41,23 +41,27 @@ function normalize()
 		if [ ! $dups_count -eq 0 ]; then
 			echo -e "\nWe have found the following similar names for '$a':"
 			#dups_count=`expr $dups_count - 1`
-			echo "[0] $a"
+			echo "[0] '$a'"
 			for d in `seq 1 $dups_count`; do
-				echo "[$d] ${dups[$d]}"
+				echo "[$d] '${dups[$d]}'"
 			done
+			echo "[s] Skip this change"
 			# select the option
 			echo "Select the one to choose"
 			read option
 			case $option in
 				[1-${dups_count}])
 				# modify all the dups AND the current file
-				mv $1/Artist/$a/Files/* $1/Artist/${dups[$option]}/Files/
+				mv "$1/$a/Files/"* "$1/${dups[$option]}/Files/"
 				;;
-				*);;
+				s);;
+				*) # here we should go again to the options
+				;;
 			esac
 			# TODO add the modified values on a list to skip
 		fi
 	done
+	echo
 }
 
 normalize $DST/Artist
