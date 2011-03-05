@@ -29,6 +29,7 @@ typedef struct _metadatafs
 {
 	pthread_mutex_t lock;
 	pthread_mutex_t debug_lock;
+	sqlite3 *db;
 	char *basepath;
 	pthread_t scanner;
 #if HAVE_INOTIFY
@@ -252,7 +253,7 @@ static inline char * _get_last_delim(const char *start, const char *end, char de
 {
 	char *tmp;
 
-	for (tmp = end; tmp >= start; tmp--)
+	for (tmp = (char *)end; tmp >= start; tmp--)
 	{
 		if (*tmp == delim)
 			break;
@@ -266,7 +267,7 @@ static inline char * _get_last_field(const char *str, int *field)
 	char *tmp;
 	int i;
 
-	prv = tmp = str + strlen(str);
+	prv = tmp = (char *)str + strlen(str);
 again:
 	tmp = _get_last_delim(str, tmp, '/');
 	for (i = 0; i < FIELDS; i++)
@@ -283,6 +284,102 @@ again:
 	*field = i;
 	return prv;
 }
+
+/* the original file has changed on the filesystem, propragate the changes now */
+static void _file_update(const char *filename)
+{
+	Mdfs_File *file;
+	Mdfs_Artist *artist;
+	Mdfs_Title *title;
+	Mdfs_Album *album;
+	char *str;
+	void *handle;
+	struct stat st;
+	int artist_changed = 0;
+	int album_changed = 0;
+
+	handle = libmetadatafs_open(filename);
+	if (!handle) return;
+
+	/* first fetch the old file from the database */
+	file = mdfs_file_get_from_path(db, filename);
+	title = mdfs_title_get_from_id(db, file->title);
+	album = mdfs_album_get_from_id(db, title->album);
+	artist = mdfs_artist_get_from_id(db, album->artist);
+
+	/* update the artist information */
+	str = libmetadatafs_artist_get(handle);
+	if (strcmp(artist->name, str))
+	{
+		mdfs_artist_free(artist);
+		artist = mdfs_artist_new(db, str);
+		artist_changed = 1;
+		/* TODO in case there is no more albums with this artist, remove it */
+	}
+	free(str);
+	/* update the album information */
+	str = libmetadatafs_album_get(handle);
+	if (strcmp(album->name, str) || artist_changed)
+	{
+		mdfs_album_free(album);
+		album = mdfs_album_new(db, str, artist->id);
+		album_changed = 1;
+	}
+	free(str);
+	/* update the title information */
+	str = libmetadatafs_title_get(handle);
+	if (strcmp(title->name, str) || album_changed)
+	{
+		mdfs_title_free(title);
+		title = mdfs_title_new(db, str, album->id);
+	}
+	free(str);
+
+	/* update the file information */
+	if (stat(filename, &st) < 0)
+		return;
+	mdfs_file_update(file, db, filename, st.st_mtime, title->id);
+
+	libmetadatafs_close(handle);
+}
+
+static int _file_fields_update(Mdfs_File *file, metadatafs_mask mask, metadatafs_query *dst)
+{
+	void *handle;
+	int i;
+
+	handle = libmetadatafs_open(file->path);
+	if (!handle) return 0;
+	for (i = 0; i < FIELDS; i++)
+	{
+		if (mask & (1 << i))
+		{
+			switch (i)
+			{
+				case FIELD_ALBUM:
+				libmetadatafs_album_set(handle, dst->entries[FIELD_ALBUM]);
+				break;
+
+				case FIELD_ARTIST:
+				libmetadatafs_artist_set(handle, dst->entries[FIELD_ARTIST]);
+				break;
+
+				case FIELD_TITLE:
+				libmetadatafs_title_set(handle, dst->entries[FIELD_TITLE]);
+				break;
+
+				default:
+				break;
+			}
+		}
+	}
+	libmetadatafs_close(handle);
+//#if !HAVE_INOTIFY
+	_file_update(file->path);
+//#endif
+	return 1;
+}
+
 /******************************************************************************
  *                                 Database                                   *
  ******************************************************************************/
@@ -346,13 +443,21 @@ static void db_insert_file(const char *file, time_t mtime, int title)
 	printf("file found %s %ld %d\n", file, mtime, title);
 }
 
-static int db_setup(void)
+static int db_setup(metadatafs *mfs)
 {
+	char dbfilename[PATH_MAX];
+	uid_t id;
+	struct passwd *passwd;
+
+	id = getuid();
+	passwd = getpwuid(id);
+
+	snprintf(dbfilename, PATH_MAX, "%s/.metadatafs.db", passwd->pw_dir);
 	/* we should generate the database here
 	 * in case it already exists, just
 	 * compare mtimes of files
 	 */
-	if (sqlite3_open("/tmp/metadatafs.db", &db) != SQLITE_OK)
+	if (sqlite3_open(dbfilename, &db) != SQLITE_OK)
 	{
 		printf("could not open the db\n");
 		return 0;
@@ -708,9 +813,14 @@ end:
 
 static int metadatafs_getattr(const char *path, struct stat *stbuf)
 {
+	struct fuse_context *ctx;
+	metadatafs *mfs;
 	char *file;
 	int field = 0;
 	int i;
+
+	ctx = fuse_get_context();
+	mfs = ctx->private_data;
 
 	memset(stbuf, 0, sizeof(struct stat));
 	/* simplest case */
@@ -804,101 +914,6 @@ static int metadatafs_read(const char *path, char *buf, size_t size, off_t offse
 static int metadatafs_statfs(const char *path, struct statvfs *stbuf)
 {
 	return 0;
-}
-
-/* the original file has changed on the filesystem, propragate the changes now */
-static void _file_update(const char *filename)
-{
-	Mdfs_File *file;
-	Mdfs_Artist *artist;
-	Mdfs_Title *title;
-	Mdfs_Album *album;
-	char *str;
-	void *handle;
-	struct stat st;
-	int artist_changed = 0;
-	int album_changed = 0;
-
-	handle = libmetadatafs_open(filename);
-	if (!handle) return;
-
-	/* first fetch the old file from the database */
-	file = mdfs_file_get_from_path(db, filename);
-	title = mdfs_title_get_from_id(db, file->title);
-	album = mdfs_album_get_from_id(db, title->album);
-	artist = mdfs_artist_get_from_id(db, album->artist);
-
-	/* update the artist information */
-	str = libmetadatafs_artist_get(handle);
-	if (strcmp(artist->name, str))
-	{
-		mdfs_artist_free(artist);
-		artist = mdfs_artist_new(db, str);
-		artist_changed = 1;
-		/* TODO in case there is no more albums with this artist, remove it */
-	}
-	free(str);
-	/* update the album information */
-	str = libmetadatafs_album_get(handle);
-	if (strcmp(album->name, str) || artist_changed)
-	{
-		mdfs_album_free(album);
-		album = mdfs_album_new(db, str, artist->id);
-		album_changed = 1;
-	}
-	free(str);
-	/* update the title information */
-	str = libmetadatafs_title_get(handle);
-	if (strcmp(title->name, str) || album_changed)
-	{
-		mdfs_title_free(title);
-		title = mdfs_title_new(db, str, album->id);
-	}
-	free(str);
-
-	/* update the file information */
-	if (stat(filename, &st) < 0)
-		return;
-	mdfs_file_update(file, db, filename, st.st_mtime, title->id);
-
-	libmetadatafs_close(handle);
-}
-
-static int _file_fields_update(Mdfs_File *file, metadatafs_mask mask, metadatafs_query *dst)
-{
-	void *handle;
-	int i;
-
-	handle = libmetadatafs_open(file->path);
-	if (!handle) return 0;
-	for (i = 0; i < FIELDS; i++)
-	{
-		if (mask & (1 << i))
-		{
-			switch (i)
-			{
-				case FIELD_ALBUM:
-				libmetadatafs_album_set(handle, dst->entries[FIELD_ALBUM]);
-				break;
-
-				case FIELD_ARTIST:
-				libmetadatafs_artist_set(handle, dst->entries[FIELD_ARTIST]);
-				break;
-
-				case FIELD_TITLE:
-				libmetadatafs_title_set(handle, dst->entries[FIELD_TITLE]);
-				break;
-
-				default:
-				break;
-			}
-		}
-	}
-	libmetadatafs_close(handle);
-//#if !HAVE_INOTIFY
-	_file_update(file->path);
-//#endif
-	return 1;
 }
 
 int metadatafs_mkdir(const char *name, mode_t mode)
@@ -1001,9 +1016,6 @@ int metadatafs_rename(const char *orig, const char *dest)
 			new_mask |= (1 << i);
 	}
 	/* now we can update the metadata */
-	_query_dump(&src);
-	_query_dump(&dst);
-
 	/* get the specific file */
 	if (src.last_field == FIELD_FILES)
 	{
@@ -1065,14 +1077,14 @@ static void * metadatafs_init(struct fuse_conn_info *conn)
 	ctx = fuse_get_context();
 	mfs = ctx->private_data;
 	/* read/create the database */
-	if (!db_setup()) return NULL;
+	if (!db_setup(mfs)) return NULL;
 	/* update the database */
 	metadatafs_scan(mfs);
 	/* monitor file changes */
 #if HAVE_INOTIFY
 	metadatafs_monitor(mfs);
 #endif
-	return NULL;
+	return mfs;
 }
 
 static struct fuse_operations metadatafs_ops = {
