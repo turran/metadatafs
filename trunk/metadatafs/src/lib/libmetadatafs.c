@@ -41,7 +41,7 @@ char * libmetadatafs_path_last_char(char *path, char token)
 /******************************************************************************
  *                                 Backend                                    *
  ******************************************************************************/
-void * libmetadatafs_open(char *file)
+void * libmetadatafs_open(const char *file)
 {
 	if (!_backend->supported(file)) return NULL;
 	return _backend->open(file);

@@ -18,6 +18,8 @@
 #include <sys/statvfs.h>
 #include <sqlite3.h>
 #include <pthread.h>
+#include <sys/types.h>
+#include <pwd.h>
 
 #if HAVE_INOTIFY
 #include <sys/inotify.h>

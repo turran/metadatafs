@@ -14,7 +14,7 @@ typedef struct _libmetadatafs_backend
 	void (*album_set)(void *handle, char *album);
 } libmetadatafs_backend;
 
-void * libmetadatafs_open(char *file);
+void * libmetadatafs_open(const char *file);
 void libmetadatafs_close(void *handle);
 char * libmetadatafs_artist_get(void *handle);
 char * libmetadatafs_album_get(void *handle);
