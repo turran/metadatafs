@@ -1,5 +1,20 @@
-#include "metadatafs.h"
-#include "libmetadatafs.h"
+/* MetadataFS -
+ * Copyright (C) 2010 Jorge Luis Zapata
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library.
+ * If not, see <http://www.gnu.org/licenses/>.
+ */
 
 /*
  * TODO
@@ -15,15 +30,14 @@
  * - on rmdir() under a tag, delete such entry on the database
  * - add a header file
  * - move the libid3tag into a backend
- *
- *
  */
+#include "metadatafs.h"
+#include "libmetadatafs.h"
 /*============================================================================*
  *                                  Local                                     *
  *============================================================================*/
 static char *basepath;
 static int debug = 0;
-static sqlite3 *db;
 
 typedef struct _metadatafs
 {
@@ -37,6 +51,7 @@ typedef struct _metadatafs
 	int inotify_fd;
 	int inotify_wd;
 #endif
+	Mdfs_Info *info;
 } metadatafs;
 
 const char *_fields[] = {
@@ -286,7 +301,7 @@ again:
 }
 
 /* the original file has changed on the filesystem, propragate the changes now */
-static void _file_update(const char *filename)
+static void _file_update(metadatafs *mdfs, const char *filename)
 {
 	Mdfs_File *file;
 	Mdfs_Artist *artist;
@@ -302,17 +317,17 @@ static void _file_update(const char *filename)
 	if (!handle) return;
 
 	/* first fetch the old file from the database */
-	file = mdfs_file_get_from_path(db, filename);
-	title = mdfs_title_get_from_id(db, file->title);
-	album = mdfs_album_get_from_id(db, title->album);
-	artist = mdfs_artist_get_from_id(db, album->artist);
+	file = mdfs_file_get_from_path(mdfs->db, filename);
+	title = mdfs_title_get_from_id(mdfs->db, file->title);
+	album = mdfs_album_get_from_id(mdfs->db, title->album);
+	artist = mdfs_artist_get_from_id(mdfs->db, album->artist);
 
 	/* update the artist information */
 	str = libmetadatafs_artist_get(handle);
 	if (strcmp(artist->name, str))
 	{
 		mdfs_artist_free(artist);
-		artist = mdfs_artist_new(db, str);
+		artist = mdfs_artist_new(mdfs->db, str);
 		artist_changed = 1;
 		/* TODO in case there is no more albums with this artist, remove it */
 	}
@@ -322,7 +337,7 @@ static void _file_update(const char *filename)
 	if (strcmp(album->name, str) || artist_changed)
 	{
 		mdfs_album_free(album);
-		album = mdfs_album_new(db, str, artist->id);
+		album = mdfs_album_new(mdfs->db, str, artist->id);
 		album_changed = 1;
 	}
 	free(str);
@@ -331,19 +346,19 @@ static void _file_update(const char *filename)
 	if (strcmp(title->name, str) || album_changed)
 	{
 		mdfs_title_free(title);
-		title = mdfs_title_new(db, str, album->id);
+		title = mdfs_title_new(mdfs->db, str, album->id);
 	}
 	free(str);
 
 	/* update the file information */
 	if (stat(filename, &st) < 0)
 		return;
-	mdfs_file_update(file, db, filename, st.st_mtime, title->id);
+	mdfs_file_update(file, mdfs->db, filename, st.st_mtime, title->id);
 
 	libmetadatafs_close(handle);
 }
 
-static int _file_fields_update(Mdfs_File *file, metadatafs_mask mask, metadatafs_query *dst)
+static int _file_fields_update(metadatafs *mdfs, Mdfs_File *file, metadatafs_mask mask, metadatafs_query *dst)
 {
 	void *handle;
 	int i;
@@ -375,7 +390,7 @@ static int _file_fields_update(Mdfs_File *file, metadatafs_mask mask, metadatafs
 	}
 	libmetadatafs_close(handle);
 //#if !HAVE_INOTIFY
-	_file_update(file->path);
+	_file_update(mdfs, file->path);
 //#endif
 	return 1;
 }
@@ -383,12 +398,12 @@ static int _file_fields_update(Mdfs_File *file, metadatafs_mask mask, metadatafs
 /******************************************************************************
  *                                 Database                                   *
  ******************************************************************************/
-static void db_cleanup(void)
+static void db_cleanup(sqlite3 *db)
 {
 	sqlite3_close(db);
 }
 
-static int db_file_changed(const char *file, time_t mtime)
+static int db_file_changed(sqlite3 *db, const char *file, time_t mtime)
 {
 	char *str;
 	sqlite3_stmt *stmt;
@@ -421,29 +436,7 @@ static int db_file_changed(const char *file, time_t mtime)
 	}
 }
 
-static void db_insert_file(const char *file, time_t mtime, int title)
-{
-	char *str;
-	sqlite3_stmt *stmt;
-	const char *tail;
-	int error;
-	int id = -1;
-
-	str = sqlite3_mprintf("INSERT OR IGNORE INTO files (file, mtime, title) VALUES ('%q',%d,%d);",
-			file, mtime, title);
-	error = sqlite3_prepare(db, str, -1, &stmt, &tail);
-	sqlite3_free(str);
-	if (error != SQLITE_OK)
-	{
-		printf("1 error file %s\n", file);
-		return;
-	}
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-	printf("file found %s %ld %d\n", file, mtime, title);
-}
-
-static int db_setup(metadatafs *mfs)
+static int db_setup(metadatafs *mdfs)
 {
 	char dbfilename[PATH_MAX];
 	uid_t id;
@@ -453,27 +446,30 @@ static int db_setup(metadatafs *mfs)
 	passwd = getpwuid(id);
 
 	snprintf(dbfilename, PATH_MAX, "%s/.metadatafs.db", passwd->pw_dir);
-	/* we should generate the database here
-	 * in case it already exists, just
-	 * compare mtimes of files
-	 */
-	if (sqlite3_open(dbfilename, &db) != SQLITE_OK)
+	if (sqlite3_open(dbfilename, &mdfs->db) != SQLITE_OK)
 	{
 		printf("could not open the db\n");
 		return 0;
 	}
-	if (!mdfs_artist_init(db)) return 0;
-	if (!mdfs_album_init(db)) return 0;
-	if (!mdfs_title_init(db)) return 0;
-	if (!mdfs_file_init(db)) return 0;
-
+	if (!mdfs_info_init(mdfs->db)) return 0;
+	mdfs->info = mdfs_info_load(mdfs->db);
+	if (!mdfs->info)
+	{
+		mdfs->info = mdfs_info_new(0, mdfs->basepath);
+		mdfs_info_update(mdfs->db, mdfs->info);
+	}
+	/* TODO once the info is loaded handle the migration */
+	if (!mdfs_artist_init(mdfs->db)) return 0;
+	if (!mdfs_album_init(mdfs->db)) return 0;
+	if (!mdfs_title_init(mdfs->db)) return 0;
+	if (!mdfs_file_init(mdfs->db)) return 0;
 
 	return 1;
 }
 /******************************************************************************
  *                               metadatafs                                   *
  ******************************************************************************/
-static void _scan(const char *path)
+static void _scan(metadatafs *mdfs, const char *path)
 {
 	DIR *dp;
 	struct dirent *de;
@@ -506,7 +502,7 @@ static void _scan(const char *path)
 
 		if (S_ISDIR(st.st_mode))
 		{
-			_scan(realfile);
+			_scan(mdfs, realfile);
 		}
 		else if (S_ISREG(st.st_mode))
 		{
@@ -519,7 +515,7 @@ static void _scan(const char *path)
 			void *handle;
 
 			//printf("processing file %s\n", realfile);
-			if (!db_file_changed(realfile, st.st_mtime))
+			if (!db_file_changed(mdfs->db, realfile, st.st_mtime))
 				continue;
 
 			/* FIXME move all of this into a function */
@@ -528,22 +524,22 @@ static void _scan(const char *path)
 
 			/* artist */
 			str = libmetadatafs_artist_get(handle);
-			artist = mdfs_artist_new(db, str);
+			artist = mdfs_artist_new(mdfs->db, str);
 			free(str);
 			if (!artist) goto end_artist;
 			/* album */
 			str = libmetadatafs_album_get(handle);
-			album = mdfs_album_new(db, str, artist->id);
+			album = mdfs_album_new(mdfs->db, str, artist->id);
 			free(str);
 			if (!album) goto end_album;
 			/* title */
 			str = libmetadatafs_title_get(handle);
-			title = mdfs_title_new(db, str, album->id);
+			title = mdfs_title_new(mdfs->db, str, album->id);
 			free(str);
 			if (!title) goto end_title;
 
 			/* file */
-			file = mdfs_file_new(db, realfile, st.st_mtime, title->id);
+			file = mdfs_file_new(mdfs->db, realfile, st.st_mtime, title->id);
 			mdfs_title_free(title);
 end_title:
 			mdfs_album_free(album);
@@ -558,15 +554,15 @@ end_artist:
 
 static void * _scanner(void *data)
 {
-	metadatafs *mfs = data;
+	metadatafs *mdfs = data;
 
-	printf("path = %p\n", mfs->basepath);
-	_scan(mfs->basepath);
+	printf("path = %p\n", mdfs->basepath);
+	_scan(mdfs, mdfs->basepath);
 	return NULL;
 }
 
 
-static void metadatafs_scan(metadatafs *mfs)
+static void metadatafs_scan(metadatafs *mdfs)
 {
 	int ret;
 	pthread_attr_t attr;
@@ -577,7 +573,7 @@ static void metadatafs_scan(metadatafs *mfs)
 		return;
 	}
 
-	ret = pthread_create(&mfs->scanner, &attr, _scanner, mfs);
+	ret = pthread_create(&mdfs->scanner, &attr, _scanner, mdfs);
 	if (ret) {
 		perror("pthread_create");
 		return;
@@ -628,7 +624,7 @@ static void * _monitor(void *data)
 	//close(mfs->inotify_fd);
 }
 
-static void metadatafs_monitor(metadatafs *mfs)
+static void metadatafs_monitor(metadatafs *mdfs)
 {
 	int ret;
 	pthread_attr_t attr;
@@ -639,7 +635,7 @@ static void metadatafs_monitor(metadatafs *mfs)
 		return;
 	}
 
-	ret = pthread_create(&mfs->monitor, &attr, _monitor, mfs);
+	ret = pthread_create(&mdfs->monitor, &attr, _monitor, mdfs);
 	if (ret) {
 		perror("pthread_create");
 		return;
@@ -647,44 +643,44 @@ static void metadatafs_monitor(metadatafs *mfs)
 }
 #endif
 
-static void metadatafs_destroy(void *data)
+static void metadatafs_destroy(metadatafs *mdfs)
 {
-	db_cleanup();
+	db_cleanup(mdfs->db);
 }
 
 static metadatafs * metadatafs_new(char *path)
 {
-	metadatafs *mfs;
+	metadatafs *mdfs;
 	int ret;
 
-	mfs = calloc(1, sizeof(metadatafs));
-	ret = pthread_mutex_init(&mfs->lock, NULL);
+	mdfs = calloc(1, sizeof(metadatafs));
+	ret = pthread_mutex_init(&mdfs->lock, NULL);
 	if (ret)
 	{
-		free(mfs);
+		free(mdfs);
 		return NULL;
 	}
-	mfs->basepath = strdup(path);
+	mdfs->basepath = strdup(path);
 
-	return mfs;
+	return mdfs;
 }
 
-static void metadatafs_free(metadatafs *mfs)
+static void metadatafs_free(metadatafs *mdfs)
 {
-	if (mfs->scanner)
+	if (mdfs->scanner)
 	{
-		pthread_cancel(mfs->scanner);
-		pthread_join(mfs->scanner, NULL);
+		pthread_cancel(mdfs->scanner);
+		pthread_join(mdfs->scanner, NULL);
 	}
 #if HAVE_INOTIFY
-	if (mfs->monitor)
+	if (mdfs->monitor)
 	{
-		pthread_cancel(mfs->monitor);
-		pthread_join(mfs->monitor, NULL);
+		pthread_cancel(mdfs->monitor);
+		pthread_join(mdfs->monitor, NULL);
 	}
 #endif
-	free(mfs->basepath);
-	free(mfs);
+	free(mdfs->basepath);
+	free(mdfs);
 }
 /******************************************************************************
  *                                   FUSE                                     *
@@ -696,6 +692,11 @@ static int metadatafs_readlink(const char *path, char *buf, size_t size)
 	char *tmp;
 	char *last;
 	size_t len;
+	metadatafs *mdfs;
+	struct fuse_context *ctx;
+
+	ctx = fuse_get_context();
+	mdfs = ctx->private_data;
 
 	/* FIXME get the last entry on the path */
 	for (tmp = path + strlen(path); tmp >= path; tmp--)
@@ -706,7 +707,7 @@ static int metadatafs_readlink(const char *path, char *buf, size_t size)
 			break;
 		}
 	}
-	file = mdfs_file_get_from_id(db, atoi(tmp));
+	file = mdfs_file_get_from_id(mdfs->db, atoi(tmp));
 	if (!file)
 		return -ENOENT;
 
@@ -723,6 +724,11 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 	metadatafs_query q;
 	char *tmp;
 	int ret;
+	metadatafs *mdfs;
+	struct fuse_context *ctx;
+
+	ctx = fuse_get_context();
+	mdfs = ctx->private_data;
 
 	tmp = strdup(path);
 	ret = _path_to_query(tmp, &q);
@@ -765,7 +771,7 @@ static int metadatafs_readdir(const char *path, void *buf, fuse_fill_dir_t fille
 		char *query;
 
 		query = _query_to_string(&q);
-		error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+		error = sqlite3_prepare(mdfs->db, query, -1, &stmt, &tail);
 		free(query);
 		if (error != SQLITE_OK)
 		{
@@ -814,13 +820,13 @@ end:
 static int metadatafs_getattr(const char *path, struct stat *stbuf)
 {
 	struct fuse_context *ctx;
-	metadatafs *mfs;
+	metadatafs *mdfs;
 	char *file;
 	int field = 0;
 	int i;
 
 	ctx = fuse_get_context();
-	mfs = ctx->private_data;
+	mdfs = ctx->private_data;
 
 	memset(stbuf, 0, sizeof(struct stat));
 	/* simplest case */
@@ -855,7 +861,7 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 		{
 			Mdfs_File *f;
 
-			f = mdfs_file_get_from_id(db, atoi(file));
+			f = mdfs_file_get_from_id(mdfs->db, atoi(file));
 			if (!f) return -ENOENT;
 			mdfs_file_free(f);
 			stbuf->st_mode = S_IFLNK | 0644;
@@ -866,7 +872,7 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 		case FIELD_ALBUM:
 		{
 			Mdfs_Album *album;
-			album = mdfs_album_get_from_name(db, file);
+			album = mdfs_album_get_from_name(mdfs->db, file);
 			if (!album) return -ENOENT;
 			mdfs_album_free(album);
 		}
@@ -875,7 +881,7 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 		case FIELD_ARTIST:
 		{
 			Mdfs_Artist *artist;
-			artist = mdfs_artist_get(db, file);
+			artist = mdfs_artist_get(mdfs->db, file);
 			if (!artist) return -ENOENT;
 			mdfs_artist_free(artist);
 		}
@@ -887,7 +893,7 @@ static int metadatafs_getattr(const char *path, struct stat *stbuf)
 		case FIELD_TITLE:
 		{
 			Mdfs_Title *title;
-			title = mdfs_title_get_from_name(db, file);
+			title = mdfs_title_get_from_name(mdfs->db, file);
 			if (!title) return -ENOENT;
 			mdfs_title_free(title);
 		}
@@ -921,6 +927,11 @@ int metadatafs_mkdir(const char *name, mode_t mode)
 	metadatafs_query query;
 	char *tmp;
 	int ret;
+	metadatafs *mdfs;
+	struct fuse_context *ctx;
+
+	ctx = fuse_get_context();
+	mdfs = ctx->private_data;
 
 	tmp = strdup(name);
 	ret = _path_to_query(tmp, &query);
@@ -937,7 +948,7 @@ int metadatafs_mkdir(const char *name, mode_t mode)
 		{
 			Mdfs_Artist *artist;
 
-			artist = mdfs_artist_new(db, query.entries[FIELD_ARTIST]);
+			artist = mdfs_artist_new(mdfs->db, query.entries[FIELD_ARTIST]);
 			mdfs_artist_free(artist);
 		}
 		break;
@@ -948,9 +959,9 @@ int metadatafs_mkdir(const char *name, mode_t mode)
 			Mdfs_Artist *artist;
 
 			if (!(query.fields & MASK_ARTIST)) return -EINVAL;
-			artist = mdfs_artist_get(db, query.entries[FIELD_ARTIST]);
+			artist = mdfs_artist_get(mdfs->db, query.entries[FIELD_ARTIST]);
 			if (!artist) return -EINVAL;
-			album = mdfs_album_new(db, query.entries[FIELD_ALBUM], artist->id);
+			album = mdfs_album_new(mdfs->db, query.entries[FIELD_ALBUM], artist->id);
 			mdfs_artist_free(artist);
 			mdfs_album_free(album);
 		}
@@ -962,9 +973,9 @@ int metadatafs_mkdir(const char *name, mode_t mode)
 			Mdfs_Title *title;
 
 			if (!(query.fields & MASK_ALBUM)) return -EINVAL;
-			album = mdfs_album_get_from_name(db, query.entries[FIELD_ALBUM]);
+			album = mdfs_album_get_from_name(mdfs->db, query.entries[FIELD_ALBUM]);
 			if (!album) return -EINVAL;
-			title = mdfs_title_new(db, query.entries[FIELD_TITLE], album->id);
+			title = mdfs_title_new(mdfs->db, query.entries[FIELD_TITLE], album->id);
 			mdfs_album_free(album);
 			mdfs_title_free(title);
 		}
@@ -988,6 +999,11 @@ int metadatafs_rename(const char *orig, const char *dest)
 	char *tmp;
 	int ret;
 	int i;
+	metadatafs *mdfs;
+	struct fuse_context *ctx;
+
+	ctx = fuse_get_context();
+	mdfs = ctx->private_data;
 
 	tmp = strdup(orig);
 	ret = _path_to_query(tmp, &src);
@@ -1023,8 +1039,8 @@ int metadatafs_rename(const char *orig, const char *dest)
 		int id;
 
 		id = atoi(src.entries[FIELD_FILES]);
-		file = mdfs_file_get_from_id(db, id);
-		_file_fields_update(file, new_mask, &dst);
+		file = mdfs_file_get_from_id(mdfs->db, id);
+		_file_fields_update(mdfs, file, new_mask, &dst);
 		mdfs_file_free(file);
 	}
 	/* get all the files */
@@ -1040,7 +1056,7 @@ int metadatafs_rename(const char *orig, const char *dest)
 		src.last_is_field = 1;
 
 		query = _query_to_string(&src);
-		error = sqlite3_prepare(db, query, -1, &stmt, &tail);
+		error = sqlite3_prepare(mdfs->db, query, -1, &stmt, &tail);
 		free(query);
 		if (error != SQLITE_OK)
 		{
@@ -1057,8 +1073,8 @@ int metadatafs_rename(const char *orig, const char *dest)
 				int id;
 
 				id = sqlite3_column_int(stmt, 0);
-				file = mdfs_file_get_from_id(db, id);
-				_file_fields_update(file, new_mask, &dst);
+				file = mdfs_file_get_from_id(mdfs->db, id);
+				_file_fields_update(mdfs, file, new_mask, &dst);
 				mdfs_file_free(file);
 		} while (sqlite3_step(stmt) == SQLITE_ROW);
 		sqlite3_finalize(stmt);
@@ -1069,22 +1085,26 @@ int metadatafs_rename(const char *orig, const char *dest)
 static void * metadatafs_init(struct fuse_conn_info *conn)
 {
 	struct fuse_context *ctx;
-	metadatafs *mfs;
+	metadatafs *mdfs;
 
 	/* setup the connection info */
 	conn->async_read = 0;
 	/* get the context */
 	ctx = fuse_get_context();
-	mfs = ctx->private_data;
+	mdfs = ctx->private_data;
 	/* read/create the database */
-	if (!db_setup(mfs)) return NULL;
+	if (!db_setup(mdfs))
+	{
+		printf("impossible to create/read the database\n");
+		return NULL;
+	}
 	/* update the database */
-	metadatafs_scan(mfs);
+	metadatafs_scan(mdfs);
 	/* monitor file changes */
 #if HAVE_INOTIFY
-	metadatafs_monitor(mfs);
+	metadatafs_monitor(mdfs);
 #endif
-	return mfs;
+	return mdfs;
 }
 
 static struct fuse_operations metadatafs_ops = {
@@ -1106,7 +1126,7 @@ static struct fuse_operations metadatafs_ops = {
 int main(int argc, char **argv)
 {
 	struct fuse_args args;
-	metadatafs *mfs;
+	metadatafs *mdfs;
 
 	if (argc < 2)
 	{
@@ -1116,14 +1136,14 @@ int main(int argc, char **argv)
 	basepath = strdup(argv[1]);
 	argv[1] = argv[0];
 
-	mfs = metadatafs_new(basepath);
+	mdfs = metadatafs_new(basepath);
 	args.argc = argc - 1;
 	args.argv = argv + 1;
 	args.allocated = 0;
 
 	//fuse_opt_match(args,
-	fuse_main(argc - 1, argv + 1, &metadatafs_ops, mfs);
-	metadatafs_free(mfs);
+	fuse_main(argc - 1, argv + 1, &metadatafs_ops, mdfs);
+	metadatafs_free(mdfs);
 	free(basepath);
 
 	return 0;

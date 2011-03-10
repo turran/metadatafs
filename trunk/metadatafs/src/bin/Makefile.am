@@ -7,7 +7,8 @@ metadatafs_SOURCES = \
 	metadatafs_artist.c \
 	metadatafs_album.c \
 	metadatafs_title.c \
-	metadatafs_file.c
+	metadatafs_file.c \
+	metadatafs_info.c
 
 metadatafs_LDADD = $(fuse_LIBS) $(sqlite3_LIBS) $(top_builddir)/src/lib/libmetadatafs.la
 

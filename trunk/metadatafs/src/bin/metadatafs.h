@@ -1,3 +1,21 @@
+/* MetadataFS -
+ * Copyright (C) 2010 Jorge Luis Zapata
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library.
+ * If not, see <http://www.gnu.org/licenses/>.
+ */
+
 #ifndef _METADATAFS_H
 #define _METADATAFS_H
 
@@ -33,6 +51,13 @@ typedef struct _Mdfs_Album Mdfs_Album;
 typedef struct _Mdfs_Artist Mdfs_Artist;
 typedef struct _Mdfs_Title Mdfs_Title;
 typedef struct _Mdfs_File Mdfs_File;
+typedef struct _Mdfs_Info Mdfs_Info;
+
+struct _Mdfs_Info
+{
+	int version;
+	char *basepath;
+};
 
 struct _Mdfs_Artist
 {
@@ -91,5 +116,10 @@ Mdfs_Artist * mdfs_artist_get(sqlite3 *db, const char *name);
 Mdfs_Artist * mdfs_artist_new(sqlite3 *db, const char *name);
 void mdfs_artist_free(Mdfs_Artist *artist);
 int mdfs_artist_init(sqlite3 *db);
+
+/* info */
+void mdfs_info_update(sqlite3 *db, Mdfs_Info *info);
+Mdfs_Info * mdfs_info_load(sqlite3 *db);
+
 
 #endif
